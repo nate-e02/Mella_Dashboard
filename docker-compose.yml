@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: mellafx_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mellafx
+      POSTGRES_PASSWORD: mellafx_dev_password
+      POSTGRES_DB: mellafx
+    ports:
+      - "5432:5432"
+    volumes:
+      - mellafx_pgdata:/var/lib/postgresql/data
+volumes:
+  mellafx_pgdata:

@@ -1,0 +1,132 @@
+# MellaFx
+
+A local, self-contained prop-trading-firm management platform: an **Admin** application, a **Trader** application, and a shared PostgreSQL database. Payments, KYC, and trading are all simulated for local/demo use — there is no real payment processor, identity verification provider, or live broker connection.
+
+## Stack
+
+- Next.js (App Router) + React + TypeScript
+- Tailwind CSS v4
+- PostgreSQL + Prisma ORM
+- Custom session auth (bcrypt password hashing + signed JWT session cookie backed by a `Session` table so sessions are revocable)
+- Zod for validation
+- Recharts for charts
+
+## 1. Prerequisites
+
+- Node.js 20+
+- Docker (for a local PostgreSQL instance) — or any PostgreSQL 14+ server you already have running
+
+## 2. Install dependencies
+
+```bash
+npm install
+```
+
+## 3. Configure environment variables
+
+Copy the example file and adjust if needed (the defaults work out of the box with the bundled `docker-compose.yml`):
+
+```bash
+cp .env.example .env
+```
+
+`.env.example`:
+
+```env
+DATABASE_URL="postgresql://mellafx:mellafx_dev_password@localhost:5432/mellafx?schema=public"
+JWT_SECRET="change_me_to_a_long_random_string"
+SESSION_COOKIE_NAME="mellafx_session"
+```
+
+## 4. Start PostgreSQL
+
+A `docker-compose.yml` is included, exposing Postgres on `localhost:5432` with credentials matching the default `.env`:
+
+```bash
+docker compose up -d
+```
+
+(If you'd rather use an existing PostgreSQL server, just point `DATABASE_URL` at it instead.)
+
+## 5. Run migrations
+
+```bash
+npx prisma migrate dev
+```
+
+This creates all tables (`User`, `Session`, `Template`, `Purchase`, `TradingAccount`, `Trade`, `KycSubmission`, `CrmLead`, `SupportTicket`, `Payout`, `Notification`, `AuditLog`, etc.) as defined in `prisma/schema.prisma`.
+
+## 6. Seed the database
+
+```bash
+npm run db:seed
+```
+
+This creates:
+
+- 1 admin user
+- 4 demo traders (in various states: active, failed, funded, brand-new/no trades)
+- ~17 challenge templates across Standard, Aggressive, and a Draft Crypto program, at multiple account sizes with linked Phase 1 → Phase 2 → Funded progressions
+- Demo purchases, trading accounts, and randomized trade history
+- KYC submissions (pending/approved/rejected), CRM leads, a support ticket, and a payout record
+
+**Demo credentials** (also printed to the console after seeding):
+
+| Role   | Email                  | Password       |
+| ------ | ---------------------- | -------------- |
+| Admin  | admin@mellafx.local    | Admin12345!    |
+| Trader | alex@mellafx.local     | Trader1234!    |
+| Trader | jamie@mellafx.local    | Trader1234!    |
+| Trader | sam@mellafx.local      | Trader1234!    |
+| Trader | taylor@mellafx.local   | Trader1234!    |
+
+You can override the admin/trader seed passwords with the `SEED_ADMIN_PASSWORD` / `SEED_TRADER_PASSWORD` environment variables before running the seed script.
+
+The seed script can be re-run at any time (`npm run db:seed`) — it upserts users and clears/recreates templates, so it's safe to run repeatedly during development. `npx prisma migrate reset` will fully wipe and reseed the database if you want a clean slate.
+
+## 7. Start the app
+
+```bash
+npm run dev
+```
+
+Visit `http://localhost:3000`:
+
+- `/` — public landing page (challenge cards are pulled live from active Phase 1 templates in the database)
+- `/login`, `/register` — auth for both admins and traders (role is read from the database session, not the client)
+- `/admin` — admin application (Overview, Accounts, Users, KYC, CRM, Templates, Finance, Settings)
+- `/dashboard`, `/trade`, `/challenges`, `/purchases`, `/history`, `/account` — trader application
+
+## Other useful commands
+
+```bash
+npm run db:studio     # Prisma Studio — browse/edit the database visually
+npx prisma migrate dev --name <description>   # create a new migration after editing schema.prisma
+```
+
+## How the demo systems work
+
+- **Demo payments**: the Challenges page lets a trader "purchase" a template with a demo amount ($50/$100/$200/$500 or custom). No payment gateway is contacted — a `Purchase` row is created with status `PAID`, a `demoTransactionId`, and a `TradingAccount` is created and activated immediately.
+- **Template snapshots**: at purchase time, the relevant Template fields (price, targets, drawdown limits, leverage, etc.) are frozen into a JSON `snapshot` on the `Purchase` and `TradingAccount`. Later admin edits to the live `Template` never rewrite an already-purchased challenge's rules; new purchases pick up the latest active configuration.
+- **Challenge status engine** (`src/lib/services/challengeEngine.ts`): a single, centralized service recomputes balance/equity/drawdown from an account's trades and transitions `ACTIVE → PASSED/FAILED`, then auto-creates the next linked phase's account (Phase 1 → Phase 2 → Funded) using each Template's `nextPhaseId`. It runs whenever an account is viewed (admin or trader) since there is no live trading engine to push updates in real time.
+- **Simulating trades**: since there's no live broker connection, an admin can generate demo trade history for any account from its detail page ("Run 10 Demo Trades", with a selectable win-bias preset including "Breach Drawdown") to exercise the pass/fail/fund engine end-to-end.
+- **Safe template deletion**: deleting a template that has never been purchased hard-deletes it; a template referenced by any purchase/account is archived instead, preserving historical data.
+
+## Project structure
+
+```
+prisma/schema.prisma        Database schema
+prisma/seed.ts               Seed script
+src/lib/auth/                 Password hashing, session management, route guards
+src/lib/services/             Business logic (templates, users, accounts, purchases, kyc, crm, stats, calculations, challengeEngine, audit)
+src/lib/validation/schemas.ts Zod schemas shared by API routes and forms
+src/app/api/                  API routes (admin/*, trader/*, auth/*, account/*)
+src/app/admin/                Admin application pages
+src/app/(trader)/             Trader application pages (auth-guarded route group)
+src/app/login, /register, /   Public pages
+src/components/ui/            Reusable table/filter/pagination/modal/toast/chart primitives
+src/components/admin/         Admin-specific components
+src/components/trader/        Trader-specific components
+```
+
+All authorization is enforced server-side (`requireAdmin` / `requireTrader` in `src/lib/auth/guards.ts`) inside API routes and server components — hiding a nav link is never the only protection, and every trader-scoped query is filtered/verified by the authenticated user's own id.

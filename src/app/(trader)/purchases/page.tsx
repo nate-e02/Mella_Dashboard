@@ -6,9 +6,18 @@ import { formatCurrency, formatDateTime } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
-export default async function PurchasesPage() {
+const PAYMENT_BANNERS: Record<string, { tone: string; message: string }> = {
+  success: { tone: "border-success/30 bg-success/10 text-success", message: "Payment confirmed — your challenge is now active." },
+  pending: { tone: "border-warning/30 bg-warning/10 text-warning", message: "Your payment is still being confirmed. This page will reflect the final status shortly." },
+  failed: { tone: "border-danger/30 bg-danger/10 text-danger", message: "Your payment was not completed, so no challenge was activated." },
+  error: { tone: "border-danger/30 bg-danger/10 text-danger", message: "We couldn't confirm your payment status. Please check back here in a moment." },
+};
+
+export default async function PurchasesPage({ searchParams }: { searchParams: Promise<{ payment?: string }> }) {
   const user = await requireTrader();
   const purchases = await listPurchasesForUser(user.id);
+  const { payment } = await searchParams;
+  const banner = payment ? PAYMENT_BANNERS[payment] : undefined;
 
   return (
     <div className="flex flex-col gap-6">
@@ -16,6 +25,8 @@ export default async function PurchasesPage() {
         <h1 className="text-2xl font-semibold">My Purchases</h1>
         <p className="text-sm text-muted">All challenges you have purchased, and their current progress.</p>
       </div>
+
+      {banner && <div className={`card border px-4 py-3 text-sm ${banner.tone}`}>{banner.message}</div>}
 
       {purchases.length === 0 ? (
         <div className="card p-10 text-center">

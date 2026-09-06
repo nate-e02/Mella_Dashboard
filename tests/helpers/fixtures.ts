@@ -119,11 +119,55 @@ export class TestFixtures {
     return prisma.tradingAccount.findMany({ where: { previousAccountId } });
   }
 
+  /**
+   * Directly creates an already-PAID Purchase + activated TradingAccount,
+   * bypassing the real Chapa flow entirely. For tests that need a paid
+   * purchase as a precondition (e.g. refund/cancel state-transition tests)
+   * without mocking the Chapa API boundary - those are exercised separately
+   * in purchases.integration.test.ts.
+   */
+  async createPaidPurchase(params: { userId: string; template: Template; amount?: number }) {
+    const snapshot = toTemplateSnapshot(params.template);
+    const amount = params.amount ?? params.template.price;
+
+    const purchase = await prisma.purchase.create({
+      data: {
+        userId: params.userId,
+        templateId: params.template.id,
+        status: "PAID",
+        amount,
+        currency: "ETB",
+        providerTxRef: `vitest-fixture-${uniqueSuffix()}`,
+        paymentDate: new Date(),
+        snapshot: snapshot as never,
+      },
+    });
+
+    const account = await prisma.tradingAccount.create({
+      data: {
+        userId: params.userId,
+        purchaseId: purchase.id,
+        templateId: params.template.id,
+        snapshot: snapshot as never,
+        phase: params.template.phase,
+        status: "ACTIVE",
+        startingBalance: params.template.startingBalance,
+        balance: params.template.startingBalance,
+        equity: params.template.startingBalance,
+        highWaterMark: params.template.startingBalance,
+        dailyAnchorBalance: params.template.startingBalance,
+      },
+    });
+    this.accountIds.push(account.id);
+
+    return { purchase, account };
+  }
+
   async cleanup() {
     if (this.userIds.length > 0) {
       // Key off userId (not just the accountIds this helper itself created)
       // so accounts created indirectly by a service call under test - e.g.
-      // createDemoPurchase(), or a next-phase account the challenge engine
+      // activatePurchase(), or a next-phase account the challenge engine
       // creates on a PASSED transition - are swept up too.
       const ownedAccounts = await prisma.tradingAccount.findMany({
         where: { userId: { in: this.userIds } },

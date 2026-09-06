@@ -91,7 +91,7 @@ export async function listPurchasedRecords(params: {
     where.OR = [
       { user: { name: { contains: params.search, mode: "insensitive" } } },
       { user: { email: { contains: params.search, mode: "insensitive" } } },
-      { demoTransactionId: { contains: params.search, mode: "insensitive" } },
+      { providerTxRef: { contains: params.search, mode: "insensitive" } },
     ];
   }
 

@@ -275,7 +275,7 @@ async function main() {
         status: "PAID",
         amount: template.price,
         currency: template.currency,
-        demoTransactionId: randomTransactionId(),
+        providerTxRef: randomTransactionId(),
         paymentDate: createdAt,
         createdAt,
         snapshot,

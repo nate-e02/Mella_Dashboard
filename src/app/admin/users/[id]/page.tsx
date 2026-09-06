@@ -102,7 +102,7 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
                 <td className="px-4 py-2.5">
                   <StatusBadge status={p.status} />
                 </td>
-                <td className="px-4 py-2.5 font-mono text-xs">{p.demoTransactionId}</td>
+                <td className="px-4 py-2.5 font-mono text-xs">{p.providerTxRef}</td>
                 <td className="px-4 py-2.5">{formatDateTime(p.createdAt)}</td>
               </tr>
             ))}

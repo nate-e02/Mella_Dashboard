@@ -100,9 +100,11 @@ export const leadSchema = z.object({
   notes: z.string().max(2000).default(""),
 });
 
-export const demoPurchaseSchema = z.object({
+// Deliberately has NO `amount` field: the price is always resolved
+// server-side from the template in the database (see
+// initiateChapaPurchase()) - a client can never influence what gets charged.
+export const initiatePurchaseSchema = z.object({
   templateId: z.string().min(1),
-  amount: z.number().positive().max(1_000_000, "Demo amount is unreasonably large"),
   // One key per purchase attempt (client-generated), used to make retried
   // submissions of the same attempt idempotent. Optional for backward
   // compatibility with any other caller of this schema.

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
-import { refundPurchase, cancelPurchase, createDemoPurchase } from "@/lib/services/purchases";
+import { refundPurchase, cancelPurchase } from "@/lib/services/purchases";
 import { decideKyc, createKycSubmission } from "@/lib/services/kyc";
 import { decidePayout, createPayout } from "@/lib/services/payouts";
 import { ConflictError } from "@/lib/auth/guards";
@@ -13,7 +13,7 @@ describe("invalid state transitions are rejected", () => {
   it("cannot refund a purchase twice", async () => {
     const user = await fixtures.createUser();
     const template = await fixtures.createTemplate();
-    const { purchase } = await createDemoPurchase(user.id, template.id, 49);
+    const { purchase } = await fixtures.createPaidPurchase({ userId: user.id, template });
 
     await refundPurchase(purchase.id, user.id);
 
@@ -23,7 +23,7 @@ describe("invalid state transitions are rejected", () => {
   it("cannot cancel a purchase that has already been refunded", async () => {
     const user = await fixtures.createUser();
     const template = await fixtures.createTemplate();
-    const { purchase } = await createDemoPurchase(user.id, template.id, 49);
+    const { purchase } = await fixtures.createPaidPurchase({ userId: user.id, template });
 
     await refundPurchase(purchase.id, user.id);
 

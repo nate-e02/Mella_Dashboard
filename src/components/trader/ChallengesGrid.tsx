@@ -7,8 +7,6 @@ import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { formatCurrency } from "@/lib/format";
 
-const DEMO_AMOUNTS = [50, 100, 200, 500];
-
 export function ChallengesGrid({ templates }: { templates: Template[] }) {
   const [selected, setSelected] = useState<Template | null>(null);
 
@@ -53,7 +51,7 @@ export function ChallengesGrid({ templates }: { templates: Template[] }) {
                 <div className="mt-auto flex items-center justify-between pt-2">
                   <span className="text-xl font-semibold">{formatCurrency(t.price, t.currency)}</span>
                   <button className="btn-primary" onClick={() => setSelected(t)}>
-                    Purchase (Demo)
+                    Purchase
                   </button>
                 </div>
               </div>
@@ -77,16 +75,14 @@ function RuleRow({ label, value }: { label: string; value: string }) {
 }
 
 function PurchaseModal({ template, onClose }: { template: Template | null; onClose: () => void }) {
-  const [amount, setAmount] = useState<number>(template?.price ?? 0);
-  const [custom, setCustom] = useState("");
   const [processing, setProcessing] = useState(false);
-  const router = useRouter();
   const toast = useToast();
+  const router = useRouter();
 
   // One key per purchase attempt (i.e. per template selected), stable across
   // retries of that same attempt (a failed submit followed by clicking "Pay"
   // again reuses it) so a slow network retry or double-click can never
-  // create two purchases/accounts for the same checkout.
+  // create two payment attempts for the same checkout.
   const idempotencyKey = useMemo(() => `${template?.id}-${crypto.randomUUID()}`, [template?.id]);
 
   if (!template) return null;
@@ -94,23 +90,26 @@ function PurchaseModal({ template, onClose }: { template: Template | null; onClo
   async function submit() {
     setProcessing(true);
     try {
-      const finalAmount = custom ? Number(custom) : amount;
       const res = await fetch("/api/trader/purchases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ templateId: template!.id, amount: finalAmount, idempotencyKey }),
+        body: JSON.stringify({ templateId: template!.id, idempotencyKey }),
       });
+      const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
         throw new Error(body.error || "Purchase failed");
       }
-      toast.push("Demo payment successful — your account is now active!", "success");
-      onClose();
-      router.push("/purchases");
-      router.refresh();
+      if (body.outcome === "ALREADY_PAID") {
+        toast.push("You already own this challenge.", "success");
+        onClose();
+        router.push("/purchases");
+        return;
+      }
+      // Hand off to Chapa's hosted checkout - the account is only created
+      // once the payment is verified server-side after checkout completes.
+      window.location.href = body.checkoutUrl;
     } catch (err) {
       toast.push(err instanceof Error ? err.message : "Purchase failed", "error");
-    } finally {
       setProcessing(false);
     }
   }
@@ -118,39 +117,19 @@ function PurchaseModal({ template, onClose }: { template: Template | null; onClo
   return (
     <Modal open={!!template} onClose={onClose} title={`Purchase ${template.name}`}>
       <div className="flex flex-col gap-4 text-sm">
-        <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
-          DEMO PAYMENT — no real money is charged. This simulates a successful checkout.
+        <div className="rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-muted">
+          You&apos;ll be redirected to Chapa to complete payment securely. Your challenge activates automatically once payment is confirmed.
         </div>
-        <div>
-          <div className="mb-2 font-medium">Select a demo payment amount</div>
-          <div className="grid grid-cols-4 gap-2">
-            {DEMO_AMOUNTS.map((a) => (
-              <button
-                key={a}
-                type="button"
-                onClick={() => {
-                  setAmount(a);
-                  setCustom("");
-                }}
-                className={`rounded-lg border px-2 py-2 text-sm font-medium ${
-                  !custom && amount === a ? "border-accent-2 bg-accent-2/15 text-accent-2" : "border-border bg-surface-2"
-                }`}
-              >
-                ${a}
-              </button>
-            ))}
-          </div>
-          <label className="mt-2 flex flex-col gap-1">
-            <span className="text-xs text-muted">Or enter a custom demo amount</span>
-            <input type="number" min={1} className="input-base" placeholder={`Suggested: ${formatCurrency(template.price, template.currency)}`} value={custom} onChange={(e) => setCustom(e.target.value)} />
-          </label>
+        <div className="flex items-center justify-between rounded-lg border border-border bg-surface-2 px-4 py-3">
+          <span className="text-sm text-muted">Total due</span>
+          <span className="text-xl font-semibold">{formatCurrency(template.price, "ETB")}</span>
         </div>
         <div className="flex justify-end gap-2">
           <button className="btn-secondary" onClick={onClose} disabled={processing}>
             Cancel
           </button>
           <button className="btn-primary" onClick={submit} disabled={processing}>
-            {processing ? "Processing demo payment..." : `Pay ${formatCurrency(custom ? Number(custom) : amount, template.currency)}`}
+            {processing ? "Redirecting to Chapa..." : `Pay with Chapa`}
           </button>
         </div>
       </div>

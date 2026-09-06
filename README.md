@@ -1,6 +1,6 @@
 # MellaFx
 
-A local, self-contained prop-trading-firm management platform: an **Admin** application, a **Trader** application, and a shared PostgreSQL database. Payments, KYC, and trading are all simulated for local/demo use — there is no real payment processor, identity verification provider, or live broker connection.
+A local, self-contained prop-trading-firm management platform: an **Admin** application, a **Trader** application, and a shared PostgreSQL database. Challenge purchases are paid for via **Chapa** (real payment initialization/verification); KYC and trading remain simulated for local/demo use — there is no identity verification provider or live broker connection.
 
 ## Stack
 
@@ -36,7 +36,14 @@ cp .env.example .env
 DATABASE_URL="postgresql://mellafx:mellafx_dev_password@localhost:5432/mellafx?schema=public"
 JWT_SECRET="change_me_to_a_long_random_string"
 SESSION_COOKIE_NAME="mellafx_session"
+APP_URL="http://localhost:3000"
+CHAPA_SECRET_KEY=
+CHAPA_PUBLIC_KEY=
+CHAPA_ENCRYPTION_KEY=
+CHAPA_MERCHANT_ID=
 ```
+
+`CHAPA_SECRET_KEY` is required for real trader-initiated purchases to work (get it from your Chapa dashboard - never commit it). Without it, purchase initialization fails cleanly and the [admin test-paid action](#payments-chapa) remains available for local development.
 
 ## 4. Start PostgreSQL
 
@@ -104,9 +111,22 @@ npm run db:studio     # Prisma Studio — browse/edit the database visually
 npx prisma migrate dev --name <description>   # create a new migration after editing schema.prisma
 ```
 
-## How the demo systems work
+## Payments (Chapa)
 
-- **Demo payments**: the Challenges page lets a trader "purchase" a template with a demo amount ($50/$100/$200/$500 or custom). No payment gateway is contacted — a `Purchase` row is created with status `PAID`, a `demoTransactionId`, and a `TradingAccount` is created and activated immediately.
+Challenge purchases are paid for via [Chapa](https://developer.chapa.co). The flow:
+
+1. Trader clicks **Purchase** on a challenge → the server looks up the template's **current database price** (never a client-supplied amount) and creates a `PENDING` `Purchase` with a unique `tx_ref`.
+2. The server calls Chapa's `POST /v1/transaction/initialize` for exactly that amount in `ETB` and the trader is redirected to Chapa's hosted checkout.
+3. After checkout, Chapa redirects the browser back to `/api/payments/chapa/return`, and/or POSTs to `/api/payments/chapa/webhook` (configure this URL in your Chapa dashboard for local testing via a tunnel, e.g. ngrok, pointed at `APP_URL`).
+4. Both routes call the same function, which **re-verifies the transaction directly with Chapa** (`GET /v1/transaction/verify/<tx_ref>`) and cross-checks the returned amount/currency/reference against the local `Purchase` before doing anything - a browser redirect or webhook delivery is never trusted on its own.
+5. Only on a verified match does the purchase become `PAID` and the existing TradingAccount-creation logic run. This is guarded by the same database-transaction/compare-and-swap pattern the challenge engine uses, so a retried callback, a duplicate webhook delivery, or the callback and webhook arriving at the same time can never create a second purchase or account.
+
+The webhook is authenticated via Chapa's documented `x-chapa-signature` / `chapa-signature` headers (HMAC-SHA256) - an unverified webhook request is rejected before it can touch any purchase.
+
+**Admin test-paid action (temporary, development only):** in Admin → CRM → Purchased, any `PENDING` or `FAILED` purchase has a **"Mark Paid (Test)"** button, visible to admins only. It runs through the exact same activation logic a verified Chapa payment does (not a separate code path), so it produces identical purchase/account state - useful for testing the rest of the app without live Chapa credentials.
+
+## How the other demo systems work
+
 - **Template snapshots**: at purchase time, the relevant Template fields (price, targets, drawdown limits, leverage, etc.) are frozen into a JSON `snapshot` on the `Purchase` and `TradingAccount`. Later admin edits to the live `Template` never rewrite an already-purchased challenge's rules; new purchases pick up the latest active configuration.
 - **Challenge status engine** (`src/lib/services/challengeEngine.ts`): a single, centralized service recomputes balance/equity/drawdown from an account's trades and transitions `ACTIVE → PASSED/FAILED`, then auto-creates the next linked phase's account (Phase 1 → Phase 2 → Funded) using each Template's `nextPhaseId`. It runs whenever an account is viewed (admin or trader) since there is no live trading engine to push updates in real time.
 - **Simulating trades**: since there's no live broker connection, an admin can generate demo trade history for any account from its detail page ("Run 10 Demo Trades", with a selectable win-bias preset including "Breach Drawdown") to exercise the pass/fail/fund engine end-to-end.
@@ -118,9 +138,9 @@ npx prisma migrate dev --name <description>   # create a new migration after edi
 prisma/schema.prisma        Database schema
 prisma/seed.ts               Seed script
 src/lib/auth/                 Password hashing, session management, route guards
-src/lib/services/             Business logic (templates, users, accounts, purchases, kyc, crm, stats, calculations, challengeEngine, audit)
+src/lib/services/             Business logic (templates, users, accounts, purchases, kyc, crm, stats, calculations, challengeEngine, audit, chapa)
 src/lib/validation/schemas.ts Zod schemas shared by API routes and forms
-src/app/api/                  API routes (admin/*, trader/*, auth/*, account/*)
+src/app/api/                  API routes (admin/*, trader/*, auth/*, account/*, payments/chapa/*)
 src/app/admin/                Admin application pages
 src/app/(trader)/             Trader application pages (auth-guarded route group)
 src/app/login, /register, /   Public pages

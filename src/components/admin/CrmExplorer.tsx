@@ -28,7 +28,7 @@ type PurchaseRow = {
   status: string;
   amount: number;
   currency: string;
-  demoTransactionId: string;
+  providerTxRef: string;
   createdAt: string;
   user: { name: string; email: string };
   template: { name: string } | null;
@@ -47,6 +47,7 @@ const PURCHASE_TABS = [
   { label: "All", value: "ALL" },
   { label: "Pending", value: "PENDING" },
   { label: "Paid", value: "PAID" },
+  { label: "Failed", value: "FAILED" },
   { label: "Refunded", value: "REFUNDED" },
   { label: "Cancelled", value: "CANCELLED" },
 ];
@@ -211,25 +212,49 @@ function PurchasedPanel() {
     }
   }
 
+  async function markPaidTest(id: string) {
+    try {
+      const res = await fetch(`/api/admin/purchases/${id}/mark-paid`, { method: "POST" });
+      if (!res.ok) throw new Error();
+      toast.push("Purchase marked paid (test)", "success");
+      refetch();
+    } catch {
+      toast.push("Failed to mark purchase paid", "error");
+    }
+  }
+
   const columns: Column<PurchaseRow>[] = [
     { key: "user", header: "User", render: (r) => <div><div className="font-medium">{r.user.name}</div><div className="text-xs text-muted">{r.user.email}</div></div> },
     { key: "template", header: "Product", render: (r) => r.template?.name ?? "—" },
     { key: "amount", header: "Amount", render: (r) => formatCurrency(r.amount, r.currency) },
-    { key: "txn", header: "Transaction ID", render: (r) => <span className="font-mono text-xs text-muted">{r.demoTransactionId}</span> },
+    { key: "txn", header: "Transaction ID", render: (r) => <span className="font-mono text-xs text-muted">{r.providerTxRef}</span> },
     { key: "status", header: "Status", render: (r) => <StatusBadge status={r.status} /> },
     { key: "created", header: "Date", render: (r) => formatDateTime(r.createdAt) },
     {
       key: "actions",
       header: "Actions",
-      render: (r) =>
-        r.status === "PAID" ? (
-          <div className="flex gap-1.5">
-            <button className="btn-ghost !px-2 !py-1 text-xs text-warning" onClick={() => refund(r.id)}>Refund</button>
-            <button className="btn-ghost !px-2 !py-1 text-xs text-danger" onClick={() => cancel(r.id)}>Cancel</button>
-          </div>
-        ) : (
-          <span className="text-xs text-muted">—</span>
-        ),
+      render: (r) => {
+        if (r.status === "PAID") {
+          return (
+            <div className="flex gap-1.5">
+              <button className="btn-ghost !px-2 !py-1 text-xs text-warning" onClick={() => refund(r.id)}>Refund</button>
+              <button className="btn-ghost !px-2 !py-1 text-xs text-danger" onClick={() => cancel(r.id)}>Cancel</button>
+            </div>
+          );
+        }
+        if (r.status === "PENDING" || r.status === "FAILED") {
+          return (
+            <button
+              className="btn-ghost !px-2 !py-1 text-xs text-success"
+              title="DEV/TEST ONLY: activates this purchase without a real Chapa payment"
+              onClick={() => markPaidTest(r.id)}
+            >
+              Mark Paid (Test)
+            </button>
+          );
+        }
+        return <span className="text-xs text-muted">—</span>;
+      },
     },
   ];
 

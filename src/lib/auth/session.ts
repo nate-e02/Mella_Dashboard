@@ -2,7 +2,7 @@ import "server-only";
 import { cookies } from "next/headers";
 import { SignJWT, jwtVerify } from "jose";
 import { prisma } from "@/lib/prisma";
-import type { Role, UserStatus } from "@prisma/client";
+import type { Prisma, Role, UserStatus } from "@prisma/client";
 
 const COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "mellafx_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
@@ -102,8 +102,8 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   };
 }
 
-export async function revokeAllSessionsForUser(userId: string) {
-  await prisma.session.updateMany({
+export async function revokeAllSessionsForUser(userId: string, db: Prisma.TransactionClient | typeof prisma = prisma) {
+  await db.session.updateMany({
     where: { userId, revokedAt: null },
     data: { revokedAt: new Date() },
   });

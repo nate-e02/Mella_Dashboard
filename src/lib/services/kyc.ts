@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import type { KycStatus, Prisma } from "@prisma/client";
 import { logAudit } from "@/lib/services/audit";
+import { ConflictError } from "@/lib/auth/guards";
 
 export async function listKycSubmissions(params: {
   search?: string;
@@ -52,22 +53,31 @@ export async function decideKyc(
   notes: string | undefined,
   reviewerId: string,
 ) {
-  const before = await prisma.kycSubmission.findUniqueOrThrow({ where: { id } });
-  const updated = await prisma.kycSubmission.update({
-    where: { id },
-    data: { status, notes: notes ?? before.notes, reviewedAt: new Date(), reviewerId },
-  });
+  return prisma.$transaction(async (tx) => {
+    const before = await tx.kycSubmission.findUniqueOrThrow({ where: { id } });
+    if (before.status !== "PENDING") {
+      throw new ConflictError(`This submission has already been ${before.status.toLowerCase()}`);
+    }
 
-  await logAudit({
-    actorId: reviewerId,
-    action: status === "APPROVED" ? "KYC_APPROVED" : "KYC_REJECTED",
-    targetType: "KycSubmission",
-    targetId: id,
-    before: { status: before.status },
-    after: { status: updated.status },
-  });
+    const updated = await tx.kycSubmission.update({
+      where: { id },
+      data: { status, notes: notes ?? before.notes, reviewedAt: new Date(), reviewerId },
+    });
 
-  return updated;
+    await logAudit(
+      {
+        actorId: reviewerId,
+        action: status === "APPROVED" ? "KYC_APPROVED" : "KYC_REJECTED",
+        targetType: "KycSubmission",
+        targetId: id,
+        before: { status: before.status },
+        after: { status: updated.status },
+      },
+      tx,
+    );
+
+    return updated;
+  });
 }
 
 export async function createKycSubmission(data: {

@@ -53,23 +53,30 @@ export async function getCrmStats() {
 }
 
 export async function createLead(data: z.infer<typeof leadSchema>, actorId: string) {
-  const lead = await prisma.crmLead.create({ data });
-  await logAudit({ actorId, action: "LEAD_CREATED", targetType: "CrmLead", targetId: lead.id, after: lead });
-  return lead;
+  return prisma.$transaction(async (tx) => {
+    const lead = await tx.crmLead.create({ data });
+    await logAudit({ actorId, action: "LEAD_CREATED", targetType: "CrmLead", targetId: lead.id, after: lead }, tx);
+    return lead;
+  });
 }
 
 export async function updateLead(id: string, data: Partial<z.infer<typeof leadSchema>>, actorId: string) {
-  const before = await prisma.crmLead.findUniqueOrThrow({ where: { id } });
-  const updated = await prisma.crmLead.update({ where: { id }, data });
-  await logAudit({
-    actorId,
-    action: "LEAD_UPDATED",
-    targetType: "CrmLead",
-    targetId: id,
-    before: { status: before.status },
-    after: { status: updated.status },
+  return prisma.$transaction(async (tx) => {
+    const before = await tx.crmLead.findUniqueOrThrow({ where: { id } });
+    const updated = await tx.crmLead.update({ where: { id }, data });
+    await logAudit(
+      {
+        actorId,
+        action: "LEAD_UPDATED",
+        targetType: "CrmLead",
+        targetId: id,
+        before: { status: before.status },
+        after: { status: updated.status },
+      },
+      tx,
+    );
+    return updated;
   });
-  return updated;
 }
 
 export async function listPurchasedRecords(params: {

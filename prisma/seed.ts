@@ -490,8 +490,12 @@ async function main() {
       { name: "Riley Scott", email: "riley.scott@example.com", status: "LOST", source: "Twitter", value: 49 },
     ],
   });
-  await prisma.crmLead.create({
-    data: { name: traders[0].name, email: traders[0].email, status: "CONVERTED", source: "Website", value: t1.price, userId: traders[0].id },
+  // upsert (not create): CrmLead.userId is unique, and this seed script is
+  // meant to be safely re-runnable against an existing database.
+  await prisma.crmLead.upsert({
+    where: { userId: traders[0].id },
+    update: {},
+    create: { name: traders[0].name, email: traders[0].email, status: "CONVERTED", source: "Website", value: t1.price, userId: traders[0].id },
   });
 
   await prisma.supportTicket.create({

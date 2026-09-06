@@ -61,36 +61,42 @@ export async function getAccountById(id: string) {
 
 /** Admin-initiated account creation: directly assigns a user to a template without going through the demo-payment flow. */
 export async function createAccountForUser(userId: string, templateId: string, actorId: string) {
-  const template = await prisma.template.findUniqueOrThrow({ where: { id: templateId } });
   const { toTemplateSnapshot } = await import("@/types");
-  const snapshot = toTemplateSnapshot(template);
-
-  const account = await prisma.tradingAccount.create({
-    data: {
-      userId,
-      templateId: template.id,
-      snapshot: snapshot as never,
-      phase: template.phase,
-      status: template.phase === "FUNDED" ? "FUNDED" : "ACTIVE",
-      startingBalance: template.startingBalance,
-      balance: template.startingBalance,
-      equity: template.startingBalance,
-      highWaterMark: template.startingBalance,
-      dailyAnchorBalance: template.startingBalance,
-      fundedAt: template.phase === "FUNDED" ? new Date() : null,
-    },
-  });
-
   const { logAudit } = await import("@/lib/services/audit");
-  await logAudit({
-    actorId,
-    action: "ACCOUNT_CREATED_BY_ADMIN",
-    targetType: "TradingAccount",
-    targetId: account.id,
-    after: { userId, templateId },
-  });
 
-  return account;
+  return prisma.$transaction(async (tx) => {
+    const template = await tx.template.findUniqueOrThrow({ where: { id: templateId } });
+    const snapshot = toTemplateSnapshot(template);
+
+    const account = await tx.tradingAccount.create({
+      data: {
+        userId,
+        templateId: template.id,
+        snapshot: snapshot as never,
+        phase: template.phase,
+        status: template.phase === "FUNDED" ? "FUNDED" : "ACTIVE",
+        startingBalance: template.startingBalance,
+        balance: template.startingBalance,
+        equity: template.startingBalance,
+        highWaterMark: template.startingBalance,
+        dailyAnchorBalance: template.startingBalance,
+        fundedAt: template.phase === "FUNDED" ? new Date() : null,
+      },
+    });
+
+    await logAudit(
+      {
+        actorId,
+        action: "ACCOUNT_CREATED_BY_ADMIN",
+        targetType: "TradingAccount",
+        targetId: account.id,
+        after: { userId, templateId },
+      },
+      tx,
+    );
+
+    return account;
+  });
 }
 
 export async function listAccountsForUser(userId: string) {

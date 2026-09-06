@@ -112,3 +112,14 @@ export function dailyDrawdownPercent(dailyAnchorBalance: number, equity: number)
   if (dailyAnchorBalance <= 0) return 0;
   return Math.max(0, ((dailyAnchorBalance - equity) / dailyAnchorBalance) * 100);
 }
+
+/**
+ * Rounds a monetary value to the nearest cent. All challenge-engine boundary
+ * comparisons (profit target, drawdown limits) are done in rounded-cent
+ * terms so that ordinary binary floating-point noise (e.g. 10000 * 0.08
+ * evaluating to 799.9999999999999) can never make an exact-boundary result
+ * flip to the wrong side of a `>=` comparison.
+ */
+export function roundCurrency(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}

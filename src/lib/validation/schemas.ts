@@ -102,7 +102,11 @@ export const leadSchema = z.object({
 
 export const demoPurchaseSchema = z.object({
   templateId: z.string().min(1),
-  amount: z.number().positive(),
+  amount: z.number().positive().max(1_000_000, "Demo amount is unreasonably large"),
+  // One key per purchase attempt (client-generated), used to make retried
+  // submissions of the same attempt idempotent. Optional for backward
+  // compatibility with any other caller of this schema.
+  idempotencyKey: z.string().min(1).max(200).optional(),
 });
 
 export const accountStatusSchema = z.object({

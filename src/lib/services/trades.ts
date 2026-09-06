@@ -79,11 +79,17 @@ export function resolveTimeframe(
       return { from: new Date(now.getFullYear(), now.getMonth() - 6, now.getDate()), to: undefined };
     case "this_year":
       return { from: new Date(now.getFullYear(), 0, 1), to: undefined };
-    case "custom":
+    case "custom": {
+      // Guard against malformed date strings from the client: an invalid
+      // Date object must never be passed through to a Prisma filter, so
+      // unparseable input is treated as "no bound" rather than throwing.
+      const from = customFrom ? new Date(customFrom) : undefined;
+      const to = customTo ? new Date(customTo) : undefined;
       return {
-        from: customFrom ? new Date(customFrom) : undefined,
-        to: customTo ? new Date(customTo) : undefined,
+        from: from && !Number.isNaN(from.getTime()) ? from : undefined,
+        to: to && !Number.isNaN(to.getTime()) ? to : undefined,
       };
+    }
     case "all_time":
     default:
       return { from: undefined, to: undefined };

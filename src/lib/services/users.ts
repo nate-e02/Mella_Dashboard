@@ -4,6 +4,7 @@ import type { Prisma, Role, UserStatus } from "@prisma/client";
 import { hashPassword } from "@/lib/auth/password";
 import { logAudit } from "@/lib/services/audit";
 import { revokeAllSessionsForUser } from "@/lib/auth/session";
+import { ConflictError } from "@/lib/auth/guards";
 
 /** Fields safe to return from the API - never include passwordHash. */
 const SAFE_USER_SELECT = {
@@ -86,24 +87,35 @@ export async function createUser(
   data: { name: string; email: string; password: string; role: Role },
   actorId: string,
 ) {
+  // Note: this existence check plus the later create is not itself atomic
+  // (two concurrent requests for the same email could both pass it), but the
+  // `email @unique` constraint on User is the real guarantee - the loser of
+  // that race gets a Prisma P2002, which the API route maps to a clean 409
+  // instead of the generic message this check produces in the common case.
   const existing = await prisma.user.findUnique({ where: { email: data.email } });
-  if (existing) throw new Error("A user with this email already exists");
+  if (existing) throw new ConflictError("A user with this email already exists");
 
   const passwordHash = await hashPassword(data.password);
-  const user = await prisma.user.create({
-    data: { name: data.name, email: data.email, passwordHash, role: data.role },
-    select: SAFE_USER_SELECT,
-  });
 
-  await logAudit({
-    actorId,
-    action: "USER_CREATED",
-    targetType: "User",
-    targetId: user.id,
-    after: { name: user.name, email: user.email, role: user.role },
-  });
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.create({
+      data: { name: data.name, email: data.email, passwordHash, role: data.role },
+      select: SAFE_USER_SELECT,
+    });
 
-  return user;
+    await logAudit(
+      {
+        actorId,
+        action: "USER_CREATED",
+        targetType: "User",
+        targetId: user.id,
+        after: { name: user.name, email: user.email, role: user.role },
+      },
+      tx,
+    );
+
+    return user;
+  });
 }
 
 export async function updateUser(
@@ -111,20 +123,27 @@ export async function updateUser(
   data: Partial<{ name: string; email: string; role: Role; status: UserStatus }>,
   actorId: string,
 ) {
-  const before = await prisma.user.findUniqueOrThrow({ where: { id } });
-  const updated = await prisma.user.update({ where: { id }, data, select: SAFE_USER_SELECT });
+  const updated = await prisma.$transaction(async (tx) => {
+    const before = await tx.user.findUniqueOrThrow({ where: { id } });
+    const result = await tx.user.update({ where: { id }, data, select: SAFE_USER_SELECT });
 
-  if (data.status === "DISABLED" && before.status !== "DISABLED") {
-    await revokeAllSessionsForUser(id);
-  }
+    await logAudit(
+      {
+        actorId,
+        action: "USER_UPDATED",
+        targetType: "User",
+        targetId: id,
+        before: { name: before.name, email: before.email, role: before.role, status: before.status },
+        after: { name: result.name, email: result.email, role: result.role, status: result.status },
+      },
+      tx,
+    );
 
-  await logAudit({
-    actorId,
-    action: "USER_UPDATED",
-    targetType: "User",
-    targetId: id,
-    before: { name: before.name, email: before.email, role: before.role, status: before.status },
-    after: { name: updated.name, email: updated.email, role: updated.role, status: updated.status },
+    if (data.status === "DISABLED" && before.status !== "DISABLED") {
+      await revokeAllSessionsForUser(id, tx);
+    }
+
+    return result;
   });
 
   return updated;

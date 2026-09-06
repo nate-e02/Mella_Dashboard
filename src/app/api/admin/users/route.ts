@@ -22,11 +22,11 @@ export async function POST(req: NextRequest) {
     const admin = await requireAdmin();
     const body = await req.json();
     const data = createUserSchema.parse(body);
-    try {
-      const user = await createUser(data, admin.id);
-      return NextResponse.json(user, { status: 201 });
-    } catch (err) {
-      return NextResponse.json({ error: err instanceof Error ? err.message : "Failed to create user" }, { status: 409 });
-    }
+    // Errors (duplicate email -> ConflictError, or a raced unique-constraint
+    // violation -> Prisma P2002) are handled centrally by
+    // withApiErrorHandling, which maps both to a safe 409 without leaking
+    // any raw database error details.
+    const user = await createUser(data, admin.id);
+    return NextResponse.json(user, { status: 201 });
   });
 }

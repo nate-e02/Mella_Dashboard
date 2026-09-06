@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireTrader, withApiErrorHandling } from "@/lib/auth/guards";
+import { assertOwnsResource } from "@/lib/auth/ownership";
 import { prisma } from "@/lib/prisma";
 import { listTradesForAccount, resolveTimeframe, type TimeframeKey } from "@/lib/services/trades";
 import { paginationSchema } from "@/lib/validation/schemas";
@@ -10,9 +11,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     const { id } = await ctx.params;
 
     const account = await prisma.tradingAccount.findUnique({ where: { id }, select: { userId: true } });
-    if (!account || account.userId !== user.id) {
-      return NextResponse.json({ error: "Account not found" }, { status: 404 });
-    }
+    assertOwnsResource(account?.userId, user.id);
 
     const { searchParams } = new URL(req.url);
     const { page, pageSize } = paginationSchema.parse(Object.fromEntries(searchParams));

@@ -48,15 +48,14 @@ export async function getTemplateById(id: string) {
 }
 
 export async function createTemplate(data: z.infer<typeof templateSchema>, actorId: string) {
-  const template = await prisma.template.create({ data });
-  await logAudit({
-    actorId,
-    action: "TEMPLATE_CREATED",
-    targetType: "Template",
-    targetId: template.id,
-    after: template,
+  return prisma.$transaction(async (tx) => {
+    const template = await tx.template.create({ data });
+    await logAudit(
+      { actorId, action: "TEMPLATE_CREATED", targetType: "Template", targetId: template.id, after: template },
+      tx,
+    );
+    return template;
   });
-  return template;
 }
 
 export async function updateTemplate(
@@ -64,54 +63,55 @@ export async function updateTemplate(
   data: z.infer<typeof templateUpdateSchema>,
   actorId: string,
 ) {
-  const before = await prisma.template.findUniqueOrThrow({ where: { id } });
-  const updated = await prisma.template.update({ where: { id }, data });
-  await logAudit({
-    actorId,
-    action: "TEMPLATE_UPDATED",
-    targetType: "Template",
-    targetId: id,
-    before,
-    after: updated,
+  return prisma.$transaction(async (tx) => {
+    const before = await tx.template.findUniqueOrThrow({ where: { id } });
+    const updated = await tx.template.update({ where: { id }, data });
+    await logAudit(
+      { actorId, action: "TEMPLATE_UPDATED", targetType: "Template", targetId: id, before, after: updated },
+      tx,
+    );
+    return updated;
   });
-  return updated;
 }
 
 /**
- * Safe delete: if the template has never been referenced by a purchase or
- * trading account it is hard-deleted, otherwise it is archived so historical
- * records keep a valid reference.
+ * Safe delete: if the template has never been referenced by a purchase, a
+ * trading account, or another template's `nextPhaseId` progression link, it
+ * is hard-deleted; otherwise it is archived so historical records (and other
+ * templates' phase progressions) keep a valid reference. Without the
+ * nextPhaseId check, deleting a template that another template still points
+ * to as its next phase would fail with an unhandled foreign-key constraint
+ * error instead of degrading gracefully to an archive.
  */
 export async function deleteOrArchiveTemplate(id: string, actorId: string) {
-  const [purchaseCount, accountCount] = await Promise.all([
+  const [purchaseCount, accountCount, referencingTemplateCount] = await Promise.all([
     prisma.purchase.count({ where: { templateId: id } }),
     prisma.tradingAccount.count({ where: { templateId: id } }),
+    prisma.template.count({ where: { nextPhaseId: id } }),
   ]);
 
-  if (purchaseCount === 0 && accountCount === 0) {
-    const deleted = await prisma.template.delete({ where: { id } });
-    await logAudit({
-      actorId,
-      action: "TEMPLATE_DELETED",
-      targetType: "Template",
-      targetId: id,
-      before: deleted,
+  if (purchaseCount === 0 && accountCount === 0 && referencingTemplateCount === 0) {
+    return prisma.$transaction(async (tx) => {
+      const deleted = await tx.template.delete({ where: { id } });
+      await logAudit(
+        { actorId, action: "TEMPLATE_DELETED", targetType: "Template", targetId: id, before: deleted },
+        tx,
+      );
+      return { mode: "deleted" as const };
     });
-    return { mode: "deleted" as const };
   }
 
-  const archived = await prisma.template.update({
-    where: { id },
-    data: { status: "ARCHIVED", archivedAt: new Date() },
+  return prisma.$transaction(async (tx) => {
+    const archived = await tx.template.update({
+      where: { id },
+      data: { status: "ARCHIVED", archivedAt: new Date() },
+    });
+    await logAudit(
+      { actorId, action: "TEMPLATE_ARCHIVED", targetType: "Template", targetId: id, after: archived },
+      tx,
+    );
+    return { mode: "archived" as const };
   });
-  await logAudit({
-    actorId,
-    action: "TEMPLATE_ARCHIVED",
-    targetType: "Template",
-    targetId: id,
-    after: archived,
-  });
-  return { mode: "archived" as const };
 }
 
 /**

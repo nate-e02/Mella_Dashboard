@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { Template } from "@prisma/client";
 import { useRouter } from "next/navigation";
 import { Modal } from "@/components/ui/Modal";
@@ -83,6 +83,12 @@ function PurchaseModal({ template, onClose }: { template: Template | null; onClo
   const router = useRouter();
   const toast = useToast();
 
+  // One key per purchase attempt (i.e. per template selected), stable across
+  // retries of that same attempt (a failed submit followed by clicking "Pay"
+  // again reuses it) so a slow network retry or double-click can never
+  // create two purchases/accounts for the same checkout.
+  const idempotencyKey = useMemo(() => `${template?.id}-${crypto.randomUUID()}`, [template?.id]);
+
   if (!template) return null;
 
   async function submit() {
@@ -92,7 +98,7 @@ function PurchaseModal({ template, onClose }: { template: Template | null; onClo
       const res = await fetch("/api/trader/purchases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ templateId: template!.id, amount: finalAmount }),
+        body: JSON.stringify({ templateId: template!.id, amount: finalAmount, idempotencyKey }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));

@@ -13,13 +13,16 @@ import { useToast } from "@/components/ui/Toast";
 
 type KycRow = {
   id: string;
-  fullName: string;
+  fullName: string | null;
   status: string;
   submittedAt: string;
   reviewedAt: string | null;
   notes: string;
-  documentType: string;
-  country: string;
+  documentType: string | null;
+  country: string | null;
+  provider: string;
+  providerReference: string | null;
+  failureReason: string | null;
   user: { id: string; name: string; email: string };
   reviewer: { id: string; name: string } | null;
 };
@@ -53,6 +56,7 @@ export function KycTable() {
       ),
     },
     { key: "id", header: "Submission ID", render: (r) => <span className="font-mono text-xs text-muted">{r.id.slice(0, 10)}...</span> },
+    { key: "provider", header: "Provider", render: (r) => <span className="text-xs text-muted">{r.provider}</span> },
     { key: "status", header: "Status", render: (r) => <StatusBadge status={r.status} /> },
     { key: "submitted", header: "Submitted", render: (r) => formatDateTime(r.submittedAt) },
     { key: "reviewed", header: "Reviewed", render: (r) => formatDateTime(r.reviewedAt) },
@@ -135,25 +139,91 @@ function KycReviewModal({ submission, onClose, onDecided }: { submission: KycRow
     <Modal open={!!submission} onClose={onClose} title="KYC Submission">
       <div className="flex flex-col gap-3 text-sm">
         <Row label="User" value={`${submission.user.name} (${submission.user.email})`} />
-        <Row label="Full Name" value={submission.fullName} />
-        <Row label="Country" value={submission.country} />
-        <Row label="Document Type" value={submission.documentType} />
+        <Row label="Provider" value={submission.provider} />
+        <Row label="Provider Reference" value={submission.providerReference ?? "—"} />
+        <Row label="Full Name" value={submission.fullName ?? "—"} />
+        <Row label="Country" value={submission.country ?? "—"} />
+        <Row label="Document Type" value={submission.documentType ?? "—"} />
         <Row label="Status" value={submission.status} />
+        {submission.failureReason && <Row label="Failure Reason" value={submission.failureReason} />}
         <Row label="Submitted" value={formatDateTime(submission.submittedAt)} />
         <label className="flex flex-col gap-1">
           <span className="font-medium">Internal Notes</span>
           <textarea className="input-base" rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} />
         </label>
-        <div className="mt-2 flex justify-end gap-2">
-          <button className="btn-danger" disabled={busy} onClick={() => decide("REJECTED")}>
-            Reject
-          </button>
-          <button className="btn-primary" disabled={busy} onClick={() => decide("APPROVED")}>
-            Approve
-          </button>
-        </div>
+        {submission.status === "PENDING" && (
+          <div className="flex justify-end gap-2">
+            <button className="btn-danger" disabled={busy} onClick={() => decide("REJECTED")}>
+              Reject
+            </button>
+            <button className="btn-primary" disabled={busy} onClick={() => decide("APPROVED")}>
+              Approve
+            </button>
+          </div>
+        )}
+
+        <DevOverridePanel submission={submission} onOverridden={onDecided} />
       </div>
     </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// TEMPORARY DEVELOPMENT KYC OVERRIDE — REMOVE BEFORE PRODUCTION
+// Lets an admin force this submission's status without a real Dojah
+// verification, for local development/testing only. Calls the temporary
+// route at /api/admin/kyc/[id]/override, which is isolated from the real
+// Dojah webhook/verification flow. Delete this component and that route
+// together to remove the feature; nothing else needs to change.
+// ---------------------------------------------------------------------------
+function DevOverridePanel({ submission, onOverridden }: { submission: KycRow; onOverridden: () => void }) {
+  const [status, setStatus] = useState<"PENDING" | "APPROVED" | "REJECTED">("APPROVED");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  async function apply() {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/admin/kyc/${submission.id}/override`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status, reason: reason || undefined }),
+      });
+      if (!res.ok) throw new Error();
+      toast.push(`Status manually set to ${status} (dev override)`, "success");
+      onOverridden();
+    } catch {
+      toast.push("Failed to apply override", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 rounded-lg border border-warning/30 bg-warning/5 p-3">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-warning">Developer Override — Not a Real Verification</div>
+      <p className="mb-2 text-xs text-muted">
+        Temporary, admin-only, for local testing. Forces this record&apos;s status directly instead of a real Dojah verification. Every use is audit-logged as a manual override.
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-muted">Status</span>
+          <select className="input-base !w-auto !py-1.5 text-xs" value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
+            <option value="PENDING">PENDING</option>
+            <option value="APPROVED">APPROVED (VERIFIED)</option>
+            <option value="REJECTED">REJECTED (FAILED)</option>
+          </select>
+        </label>
+        <label className="flex flex-1 min-w-[160px] flex-col gap-1">
+          <span className="text-xs text-muted">Reason (optional)</span>
+          <input className="input-base !py-1.5 text-xs" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="For audit log / testing notes" />
+        </label>
+        <button className="btn-secondary !py-1.5 text-xs" disabled={busy} onClick={apply}>
+          {busy ? "Applying..." : "Apply Override (Dev Only)"}
+        </button>
+      </div>
+    </div>
   );
 }
 

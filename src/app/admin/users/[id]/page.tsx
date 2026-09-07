@@ -116,6 +116,7 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
           <thead>
             <tr className="border-b border-border bg-surface-2 text-left text-xs uppercase tracking-wide text-muted">
               <th className="px-4 py-2.5">Full Name</th>
+              <th className="px-4 py-2.5">Provider</th>
               <th className="px-4 py-2.5">Status</th>
               <th className="px-4 py-2.5">Submitted</th>
               <th className="px-4 py-2.5">Reviewed</th>
@@ -124,14 +125,15 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
           <tbody>
             {user.kycSubmissions.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-8 text-center text-sm text-muted">
+                <td colSpan={5} className="px-4 py-8 text-center text-sm text-muted">
                   No KYC submissions.
                 </td>
               </tr>
             )}
             {user.kycSubmissions.map((k) => (
               <tr key={k.id} className="border-b border-border/60 last:border-0">
-                <td className="px-4 py-2.5">{k.fullName}</td>
+                <td className="px-4 py-2.5">{k.fullName ?? "—"}</td>
+                <td className="px-4 py-2.5 text-muted">{k.provider}</td>
                 <td className="px-4 py-2.5">
                   <StatusBadge status={k.status} />
                 </td>

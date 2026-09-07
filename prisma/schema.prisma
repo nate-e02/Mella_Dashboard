@@ -314,15 +314,35 @@ model KycSubmission {
   id           String    @id @default(cuid())
   userId       String
   user         User      @relation("KycOwner", fields: [userId], references: [id])
-  fullName     String
-  country      String
-  documentType String
+  // Nullable: a provider-driven (Dojah) submission doesn't collect these
+  // upfront the way the legacy manual self-report form did - the provider's
+  // own hosted flow captures identity details itself. Still populated for
+  // legacy/manual submissions.
+  fullName     String?
+  country      String?
+  documentType String?
   status       KycStatus @default(PENDING)
   notes        String    @default("")
   submittedAt  DateTime  @default(now())
+  // Set when this submission is resolved, whether by a provider webhook or
+  // an admin decision - see `provider`/`reviewerId` to tell which.
   reviewedAt   DateTime?
+  // Null when resolved automatically by a verification provider (not a
+  // human); set to the deciding admin's id for a manual review/override.
   reviewerId   String?
   reviewer     User?     @relation("KycReviewer", fields: [reviewerId], references: [id])
+
+  // Who/what resolves this submission's status: "MANUAL" (the existing
+  // admin-review flow, including the temporary admin override) or "DOJAH"
+  // (see src/lib/services/kycProvider.ts for the provider abstraction).
+  provider          String  @default("MANUAL")
+  // Our own reference sent to the provider when starting verification -
+  // used to match an inbound webhook back to this submission. Never a raw
+  // identity number.
+  providerReference String? @unique
+  // Safe, normalized category (e.g. "government_data_verification_failed",
+  // "abandoned") - never the provider's raw response or any identity data.
+  failureReason      String?
 
   @@index([status])
   @@index([userId])

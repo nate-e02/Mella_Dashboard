@@ -82,7 +82,7 @@ export default async function LandingPage() {
       </section>
 
       <footer className="mt-auto border-t border-border py-6 text-center text-xs text-muted">
-        MellaFx is a local demo application. Payments, KYC, and trading are simulated — no real money is involved.
+        MellaFx is a local demo application. Payments (Chapa) and identity verification (Dojah) are real integrations; trading is simulated — no live broker connection exists.
       </footer>
     </div>
   );

@@ -33,7 +33,18 @@ export default async function TraderAccountPage() {
           </dl>
         </div>
 
-        <KycSubmissionCard latest={user.kycSubmissions[0] ? { ...user.kycSubmissions[0], submittedAt: user.kycSubmissions[0].submittedAt.toISOString() } : null} />
+        <KycSubmissionCard
+          latest={
+            user.kycSubmissions[0]
+              ? {
+                  id: user.kycSubmissions[0].id,
+                  status: user.kycSubmissions[0].status,
+                  submittedAt: user.kycSubmissions[0].submittedAt.toISOString(),
+                  failureReason: user.kycSubmissions[0].failureReason,
+                }
+              : null
+          }
+        />
       </div>
 
       <ChangePasswordForm />

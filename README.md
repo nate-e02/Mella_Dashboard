@@ -1,6 +1,6 @@
 # MellaFx
 
-A local, self-contained prop-trading-firm management platform: an **Admin** application, a **Trader** application, and a shared PostgreSQL database. Challenge purchases are paid for via **Chapa** (real payment initialization/verification); KYC and trading remain simulated for local/demo use — there is no identity verification provider or live broker connection.
+A local, self-contained prop-trading-firm management platform: an **Admin** application, a **Trader** application, and a shared PostgreSQL database. Challenge purchases are paid for via **Chapa** (real payment initialization/verification) and identity is verified via **Dojah** (real KYC verification, Ethiopian Fayda ID); trading remains simulated for local/demo use — there is no live broker connection.
 
 ## Stack
 
@@ -41,9 +41,15 @@ CHAPA_SECRET_KEY=
 CHAPA_PUBLIC_KEY=
 CHAPA_ENCRYPTION_KEY=
 CHAPA_MERCHANT_ID=
+DOJAH_APP_ID=
+DOJAH_PUBLIC_KEY=
+DOJAH_SECRET_KEY=
+DOJAH_WIDGET_ID=
 ```
 
 `CHAPA_SECRET_KEY` is required for real trader-initiated purchases to work (get it from your Chapa dashboard - never commit it). Without it, purchase initialization fails cleanly and the [admin test-paid action](#payments-chapa) remains available for local development.
+
+`DOJAH_APP_ID` / `DOJAH_PUBLIC_KEY` / `DOJAH_SECRET_KEY` / `DOJAH_WIDGET_ID` are required for real trader-initiated KYC verification to work (get them from your Dojah dashboard, where you also configure `DOJAH_WIDGET_ID`'s EasyOnboard flow for Fayda ID verification - never commit real values). Without them, starting a verification fails cleanly and the [admin dev override](#kyc-dojah) remains available for local development.
 
 ## 4. Start PostgreSQL
 
@@ -124,6 +130,20 @@ Challenge purchases are paid for via [Chapa](https://developer.chapa.co). The fl
 The webhook is authenticated via Chapa's documented `x-chapa-signature` / `chapa-signature` headers (HMAC-SHA256) - an unverified webhook request is rejected before it can touch any purchase.
 
 **Admin test-paid action (temporary, development only):** in Admin → CRM → Purchased, any `PENDING` or `FAILED` purchase has a **"Mark Paid (Test)"** button, visible to admins only. It runs through the exact same activation logic a verified Chapa payment does (not a separate code path), so it produces identical purchase/account state - useful for testing the rest of the app without live Chapa credentials.
+
+## KYC (Dojah)
+
+Identity verification (Ethiopian Fayda ID) runs through [Dojah](https://docs.dojah.io). The application depends only on a small `KycProvider` interface (`src/lib/services/kycProvider.ts`); Dojah is one implementation of it (`src/lib/services/dojahKycProvider.ts`), so a future provider can be swapped in without touching the KYC state machine, routes, or trader/admin UI beyond that one file.
+
+Dojah has no dedicated single-call REST endpoint for Fayda documented at integration time - Ethiopian ID + biometric verification is delivered through Dojah's "Hosted Flow / EasyOnboard" **widget**, configured in your Dojah dashboard (that's what `DOJAH_WIDGET_ID` identifies). The flow:
+
+1. Trader clicks **Start Verification** in Account → KYC → the server creates a `PENDING` `KycSubmission` with a unique `providerReference` and returns the widget config the browser needs (`app_id` / public key - both explicitly documented by Dojah as safe for client-side use; the secret key never leaves the server).
+2. The browser loads `https://widget.dojah.io/widget.js` and launches Dojah's hosted verification UI for that reference.
+3. The widget's own `onSuccess` callback is **not** trusted as proof of verification (per Dojah's own documented guidance) - only Dojah's signed webhook, `POST /api/kyc/dojah/webhook`, authenticated via the documented `x-dojah-signature` / `x-dojah-signature-v2` headers (HMAC-SHA256), is authoritative. Configure this URL in your Dojah dashboard for local testing via a tunnel (e.g. ngrok) pointed at `APP_URL`.
+4. The webhook handler normalizes Dojah's `verification_status`/`status` into `PENDING` / `VERIFIED` / `FAILED` and, only on a verified pass, marks the submission `APPROVED` (mapped 1:1 to this app's existing `KycStatus.APPROVED`/`REJECTED` - no new status values were introduced). This is guarded by the same compare-and-swap pattern the challenge engine and Chapa flow use, so duplicate webhook delivery can never double-apply a result.
+5. Only normalized, minimal data is stored: status, provider name, the provider reference, timestamps, and (on failure) a short safe category string - never a raw Fayda ID number, document/selfie images, or Dojah's raw response payload.
+
+**Admin dev override (temporary, development only):** in Admin → CRM → KYC, opening a submission shows a clearly-labeled **"Developer Override"** panel, admin-only, that force-sets a submission's status (`PENDING`/`APPROVED`/`REJECTED`) without a real Dojah verification - useful for testing without live Dojah credentials. Every use is audit-logged as `KYC_ADMIN_OVERRIDE`, distinct from the real `KYC_VERIFIED`/`KYC_FAILED` events a Dojah webhook produces.
 
 ## How the other demo systems work
 

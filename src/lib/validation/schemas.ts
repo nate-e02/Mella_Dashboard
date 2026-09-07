@@ -90,6 +90,14 @@ export const kycCreateSchema = z.object({
   documentType: z.string().min(2).max(100),
 });
 
+// TEMPORARY DEVELOPMENT KYC OVERRIDE — REMOVE BEFORE PRODUCTION.
+// Restricted to the existing KycStatus enum values - an admin can never
+// submit an arbitrary status string.
+export const kycOverrideSchema = z.object({
+  status: z.enum(["PENDING", "APPROVED", "REJECTED"]),
+  reason: z.string().max(500).optional(),
+});
+
 export const leadSchema = z.object({
   name: z.string().min(2).max(150),
   email: z.string().email(),

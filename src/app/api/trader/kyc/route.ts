@@ -1,20 +1,28 @@
-import { NextRequest, NextResponse } from "next/server";
-import { requireTrader, withApiErrorHandling } from "@/lib/auth/guards";
-import { createKycSubmission } from "@/lib/services/kyc";
-import { z } from "zod";
+import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
+import { ConflictError, requireTrader, withApiErrorHandling } from "@/lib/auth/guards";
+import { startProviderVerification } from "@/lib/services/kycVerification";
 
-const schema = z.object({
-  fullName: z.string().min(2).max(150),
-  country: z.string().min(2).max(100),
-  documentType: z.string().min(2).max(100),
-});
-
-export async function POST(req: NextRequest) {
+/**
+ * Starts (or resumes) a real KYC verification for the authenticated trader.
+ * The authenticated user always comes from the server-side session - there
+ * is no request body, so a client can never submit another user's id, a
+ * privileged status, or any provider result as "proof" of verification.
+ */
+export async function POST() {
   return withApiErrorHandling(async () => {
     const user = await requireTrader();
-    const body = await req.json();
-    const data = schema.parse(body);
-    const submission = await createKycSubmission({ userId: user.id, ...data });
-    return NextResponse.json(submission, { status: 201 });
+    try {
+      const result = await startProviderVerification(user);
+      return NextResponse.json(result, { status: 201 });
+    } catch (err) {
+      // Let recognized error shapes (state conflicts, Prisma errors) fall
+      // through to the shared handler for a consistent, safe response -
+      // only the plain business-rule message thrown directly by
+      // startProviderVerification (e.g. the provider isn't configured) is
+      // meant to be shown to the trader as-is.
+      if (err instanceof ConflictError || err instanceof Prisma.PrismaClientKnownRequestError) throw err;
+      return NextResponse.json({ error: err instanceof Error ? err.message : "Unable to start verification" }, { status: 400 });
+    }
   });
 }

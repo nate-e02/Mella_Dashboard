@@ -25,6 +25,14 @@ const NAV_GROUPS: { label: string | null; items: { href: string; label: string }
     items: [
       { href: "/admin/templates", label: "Templates" },
       { href: "/admin/trading-engine", label: "Trading Engine" },
+      { href: "/admin/news", label: "News Calendar" },
+    ],
+  },
+  {
+    label: "Growth",
+    items: [
+      { href: "/admin/coupons", label: "Coupons" },
+      { href: "/admin/referrals", label: "Referrals" },
     ],
   },
   {

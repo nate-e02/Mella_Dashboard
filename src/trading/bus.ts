@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { AccountState, MarketState, PositionInfo, Tick, Timeframe, Bar } from "@/trading/protocol";
+import type { AccountState, MarketNews, MarketState, PositionInfo, Tick, Timeframe, Bar } from "@/trading/protocol";
 
 /**
  * In-process typed event bus between feeds, candle builder, engine and the
@@ -18,7 +18,7 @@ export type OrderResultEvent = {
   filledPrice?: number;
   reason?: string;
 };
-export type MarketStatusEvent = { state: MarketState; reason?: string; symbols: Record<string, { lastTickAt: number | null; stale: boolean }> };
+export type MarketStatusEvent = { state: MarketState; reason?: string; symbols: Record<string, { lastTickAt: number | null; stale: boolean }>; news?: MarketNews };
 export type BarEvent = { symbol: string; tf: Timeframe; bar: Bar };
 
 export type BusEvents = {

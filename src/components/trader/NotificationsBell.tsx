@@ -2,13 +2,30 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { timeAgo } from "@/lib/format";
+import { formatDate } from "@/lib/format";
+import { useT } from "@/i18n/client";
 
 type Notification = { id: string; title: string; message: string; type: string; link: string | null; read: boolean; createdAt: string };
 
 const POLL_MS = 60_000;
 
+type T = ReturnType<typeof useT>;
+
+/** Localised counterpart of lib/format's timeAgo (which stays English for the admin console). */
+function relativeTime(t: T, value: string): string {
+  const d = new Date(value);
+  const minutes = Math.floor((Date.now() - d.getTime()) / 60_000);
+  if (minutes < 1) return t("common.time.justNow");
+  if (minutes < 60) return t("common.time.minutesAgo", { n: minutes });
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return t("common.time.hoursAgo", { n: hours });
+  const days = Math.floor(hours / 24);
+  if (days < 30) return t("common.time.daysAgo", { n: days });
+  return formatDate(d);
+}
+
 export function NotificationsBell() {
+  const t = useT();
   const [items, setItems] = useState<Notification[]>([]);
   const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
@@ -39,8 +56,15 @@ export function NotificationsBell() {
     function onClick(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
     document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [open]);
 
   async function openPanel() {
@@ -54,7 +78,7 @@ export function NotificationsBell() {
 
   return (
     <div className="relative" ref={ref}>
-      <button onClick={openPanel} className="btn-secondary relative !px-2.5 !py-1.5 text-sm" aria-label={`Notifications${unread ? `, ${unread} unread` : ""}`} aria-expanded={open}>
+      <button onClick={openPanel} className="btn-secondary relative !px-2.5 !py-1.5 text-sm" aria-label={unread ? t("app.notifications.labelUnread", { n: unread }) : t("app.notifications.label")} aria-expanded={open}>
         <span aria-hidden>🔔</span>
         {unread > 0 && (
           <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-semibold text-white">{unread > 9 ? "9+" : unread}</span>
@@ -62,19 +86,19 @@ export function NotificationsBell() {
       </button>
       {open && (
         <div className="absolute right-0 z-40 mt-2 w-80 max-w-[90vw] overflow-hidden rounded-xl border border-border bg-surface shadow-xl">
-          <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted">Notifications</div>
+          <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted">{t("app.notifications.title")}</div>
           <ul className="max-h-96 overflow-y-auto">
-            {items.length === 0 && <li className="px-3 py-6 text-center text-xs text-muted">No notifications yet.</li>}
+            {items.length === 0 && <li className="px-3 py-6 text-center text-xs text-muted">{t("app.notifications.empty")}</li>}
             {items.map((n) => (
               <li key={n.id} className={`border-b border-border/60 px-3 py-2 text-xs last:border-0 ${n.read ? "" : "bg-accent-2/5"}`}>
                 <div className="flex items-center justify-between gap-2">
                   <span className={`font-medium ${n.type === "danger" ? "text-danger" : n.type === "success" ? "text-success" : "text-foreground"}`}>{n.title}</span>
-                  <span className="text-[10px] text-muted">{timeAgo(n.createdAt)}</span>
+                  <span className="text-[10px] text-muted">{relativeTime(t, n.createdAt)}</span>
                 </div>
                 <p className="mt-0.5 text-muted">{n.message}</p>
                 {n.link && (
                   <Link href={n.link} className="mt-1 inline-block text-accent-2 hover:underline" onClick={() => setOpen(false)}>
-                    Open →
+                    {t("app.notifications.open")}
                   </Link>
                 )}
               </li>

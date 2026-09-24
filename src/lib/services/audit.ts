@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { clientIpFromHeaders, nullIfUnknown } from "@/lib/auth/rateLimit";
 import type { Prisma } from "@prisma/client";
 
 type Db = Prisma.TransactionClient | typeof prisma;
@@ -48,7 +49,7 @@ async function currentRequestContext(): Promise<{ ip: string | null; userAgent: 
     const { headers } = await import("next/headers");
     const h = await headers();
     return {
-      ip: h.get("cf-connecting-ip") || h.get("x-real-ip") || h.get("x-forwarded-for")?.split(",")[0]?.trim() || null,
+      ip: nullIfUnknown(clientIpFromHeaders(h)),
       userAgent: h.get("user-agent")?.slice(0, 300) ?? null,
       requestId: h.get("x-request-id"),
     };

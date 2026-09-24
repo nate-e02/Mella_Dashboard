@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { StatusBadge } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
 import { formatDateTime } from "@/lib/format";
+import { useT } from "@/i18n/client";
+import type { MessageKey } from "@/i18n/messages";
 
 type Kyc = {
   id: string;
@@ -33,35 +35,37 @@ declare global {
   }
 }
 
+class WidgetLoadError extends Error {}
+
 function loadWidgetScript(): Promise<void> {
   if (typeof window !== "undefined" && window.Connect) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const existing = document.querySelector(`script[src="${WIDGET_SCRIPT_SRC}"]`);
     if (existing) {
       existing.addEventListener("load", () => resolve());
-      existing.addEventListener("error", () => reject(new Error("Failed to load verification widget")));
+      existing.addEventListener("error", () => reject(new WidgetLoadError()));
       return;
     }
     const script = document.createElement("script");
     script.src = WIDGET_SCRIPT_SRC;
     script.async = true;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error("Failed to load verification widget"));
+    script.onerror = () => reject(new WidgetLoadError());
     document.body.appendChild(script);
   });
 }
 
 /** Friendly text for the safe, normalized failure category - never the raw provider payload. */
-function describeFailure(reason: string | null): string {
-  if (!reason) return "Verification could not be completed.";
-  if (reason === "abandoned_by_user") return "The verification session was closed before it finished.";
-  if (reason.endsWith("_verification_failed")) return "One or more verification steps could not be confirmed.";
-  return "Verification could not be completed.";
+function describeFailure(reason: string | null): MessageKey {
+  if (reason === "abandoned_by_user") return "app.kyc.fail.abandoned";
+  if (reason?.endsWith("_verification_failed")) return "app.kyc.fail.steps";
+  return "app.kyc.fail.generic";
 }
 
 export function KycSubmissionCard({ latest }: { latest: Kyc }) {
   const [starting, setStarting] = useState(false);
   const [awaitingResult, setAwaitingResult] = useState(false);
+  const t = useT();
   const toast = useToast();
   const router = useRouter();
   const pollCountRef = useRef(0);
@@ -91,10 +95,10 @@ export function KycSubmissionCard({ latest }: { latest: Kyc }) {
     try {
       const res = await fetch("/api/trader/kyc", { method: "POST" });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || "Failed to start verification");
+      if (!res.ok) throw new Error("start_failed");
 
       await loadWidgetScript();
-      if (!window.Connect) throw new Error("Verification widget failed to load");
+      if (!window.Connect) throw new WidgetLoadError();
 
       const session = body.session as { appId: string; publicKey: string; widgetId: string; referenceId: string; type: string; userData?: Record<string, unknown> };
 
@@ -110,7 +114,7 @@ export function KycSubmissionCard({ latest }: { latest: Kyc }) {
           // verification - only the signed server-side webhook is. We just
           // reflect "submitted" here and let polling pick up the real result.
           setAwaitingResult(true);
-          toast.push("Verification submitted — confirming your result...", "success");
+          toast.push(t("app.kyc.toast.submitted"), "success");
           router.refresh();
         },
         onClose: () => {
@@ -118,13 +122,13 @@ export function KycSubmissionCard({ latest }: { latest: Kyc }) {
           router.refresh();
         },
         onError: () => {
-          toast.push("Verification could not be started. Please try again.", "error");
+          toast.push(t("app.kyc.toast.couldNotStart"), "error");
         },
       });
       connect.setup();
       connect.open();
     } catch (err) {
-      toast.push(err instanceof Error ? err.message : "Failed to start verification", "error");
+      toast.push(t(err instanceof WidgetLoadError ? "app.kyc.error.widget" : "app.kyc.error.start"), "error");
     } finally {
       setStarting(false);
     }
@@ -134,10 +138,10 @@ export function KycSubmissionCard({ latest }: { latest: Kyc }) {
     return (
       <div className="card p-5">
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">KYC Verification</h3>
+          <h3 className="text-sm font-semibold">{t("app.kyc.title")}</h3>
           <StatusBadge status="APPROVED" />
         </div>
-        <p className="text-sm text-muted">Your identity has been verified.</p>
+        <p className="text-sm text-muted">{t("app.kyc.approved")}</p>
       </div>
     );
   }
@@ -146,18 +150,16 @@ export function KycSubmissionCard({ latest }: { latest: Kyc }) {
     return (
       <div className="card p-5">
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">KYC Verification</h3>
+          <h3 className="text-sm font-semibold">{t("app.kyc.title")}</h3>
           <StatusBadge status="PENDING" />
         </div>
         <p className="text-sm text-muted">
-          {awaitingResult
-            ? "Your verification has been submitted and is being confirmed. This page will update automatically."
-            : "A verification session is in progress. If you closed it before finishing, you can start a new one below."}
+          {awaitingResult ? t("app.kyc.pendingSubmitted") : t("app.kyc.pendingInProgress")}
         </p>
-        <p className="mt-2 text-xs text-muted">Submitted {formatDateTime(latest!.submittedAt)}</p>
+        <p className="mt-2 text-xs text-muted">{t("app.kyc.submittedAt", { date: formatDateTime(latest!.submittedAt) })}</p>
         {!awaitingResult && (
           <button className="btn-primary mt-3" onClick={startVerification} disabled={starting}>
-            {starting ? "Starting..." : "Resume Verification"}
+            {starting ? t("app.kyc.starting") : t("app.kyc.resume")}
           </button>
         )}
       </div>
@@ -166,17 +168,17 @@ export function KycSubmissionCard({ latest }: { latest: Kyc }) {
 
   return (
     <div className="card p-5">
-      <h3 className="mb-1 text-sm font-semibold">KYC Verification</h3>
+      <h3 className="mb-1 text-sm font-semibold">{t("app.kyc.title")}</h3>
       {status === "REJECTED" ? (
         <>
-          <p className="mb-1 text-xs text-danger">{describeFailure(latest!.failureReason)}</p>
-          <p className="mb-3 text-xs text-muted">You can start a new verification below.</p>
+          <p className="mb-1 text-xs text-danger">{t(describeFailure(latest!.failureReason))}</p>
+          <p className="mb-3 text-xs text-muted">{t("app.kyc.retryHint")}</p>
         </>
       ) : (
-        <p className="mb-3 text-xs text-muted">Verify your identity to complete your account setup.</p>
+        <p className="mb-3 text-xs text-muted">{t("app.kyc.intro")}</p>
       )}
       <button className="btn-primary" onClick={startVerification} disabled={starting}>
-        {starting ? "Starting..." : "Start Verification"}
+        {starting ? t("app.kyc.starting") : t("app.kyc.start")}
       </button>
     </div>
   );

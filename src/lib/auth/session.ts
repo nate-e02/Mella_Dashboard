@@ -3,6 +3,7 @@ import { cache } from "react";
 import { cookies, headers } from "next/headers";
 import { SignJWT, jwtVerify } from "jose";
 import { prisma } from "@/lib/prisma";
+import { clientIpFromHeaders, nullIfUnknown } from "@/lib/auth/rateLimit";
 import type { Prisma, Role, UserStatus } from "@prisma/client";
 
 /**
@@ -45,18 +46,20 @@ function getSecret() {
 export type SessionUser = {
   id: string;
   name: string;
-  email: string;
+  email: string | null;
+  phone: string | null;
   role: Role;
   status: UserStatus;
   mfaEnabled: boolean;
   emailVerifiedAt: Date | null;
+  phoneVerifiedAt: Date | null;
   sessionId: string;
 };
 
 export async function requestContext(): Promise<{ ip: string | null; userAgent: string | null; requestId: string | null }> {
   try {
     const h = await headers();
-    const ip = h.get("cf-connecting-ip") || h.get("x-real-ip") || h.get("x-forwarded-for")?.split(",")[0]?.trim() || null;
+    const ip = nullIfUnknown(clientIpFromHeaders(h));
     return { ip, userAgent: h.get("user-agent")?.slice(0, 300) ?? null, requestId: h.get("x-request-id") };
   } catch {
     return { ip: null, userAgent: null, requestId: null };
@@ -150,10 +153,12 @@ export const getSessionUser = cache(async (): Promise<SessionUser | null> => {
     id: session.user.id,
     name: session.user.name,
     email: session.user.email,
+    phone: session.user.phone,
     role: session.user.role,
     status: session.user.status,
     mfaEnabled: session.user.mfaEnabled,
     emailVerifiedAt: session.user.emailVerifiedAt,
+    phoneVerifiedAt: session.user.phoneVerifiedAt,
     sessionId: session.id,
   };
 });
@@ -199,6 +204,49 @@ export async function readMfaChallenge(): Promise<string | null> {
 export async function clearMfaChallenge() {
   const cookieStore = await cookies();
   cookieStore.delete(MFA_COOKIE_NAME);
+}
+
+// ---------------------------------------------------------------------------
+// Phone sign-up proof: after a correct SMS code for a number with no account,
+// this signed cookie carries the verified number to the "complete profile"
+// step (name, optional email), so the number never has to be trusted from the
+// client and the code does not have to be re-sent.
+// ---------------------------------------------------------------------------
+
+const PHONE_SIGNUP_COOKIE_BASE = "mellafx_phone_signup";
+const PHONE_SIGNUP_TTL_SEC = 15 * 60;
+
+function phoneSignupCookieName(): string {
+  return isSecureContext() ? `__Host-${PHONE_SIGNUP_COOKIE_BASE}` : PHONE_SIGNUP_COOKIE_BASE;
+}
+
+export async function createPhoneSignupProof(phone: string) {
+  const token = await new SignJWT({ purpose: "phone-signup", phone })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime(`${PHONE_SIGNUP_TTL_SEC}s`)
+    .sign(getSecret());
+  const cookieStore = await cookies();
+  cookieStore.set(phoneSignupCookieName(), token, { httpOnly: true, secure: isSecureContext(), sameSite: "lax", path: "/", maxAge: PHONE_SIGNUP_TTL_SEC });
+}
+
+/** The verified E.164 number from a valid, unexpired proof cookie; null otherwise. */
+export async function readPhoneSignupProof(): Promise<string | null> {
+  const cookieStore = await cookies();
+  const token = cookieStore.get(phoneSignupCookieName())?.value;
+  if (!token) return null;
+  try {
+    const { payload } = await jwtVerify(token, getSecret(), { algorithms: ["HS256"] });
+    return payload.purpose === "phone-signup" && typeof payload.phone === "string" ? payload.phone : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearPhoneSignupProof() {
+  const cookieStore = await cookies();
+  // Re-set with the same attributes: browsers ignore a `__Host-` deletion that lacks Secure.
+  cookieStore.set(phoneSignupCookieName(), "", { httpOnly: true, secure: isSecureContext(), sameSite: "lax", path: "/", maxAge: 0 });
 }
 
 /** Deletes sessions that are expired, or revoked more than 7 days ago. Run by the worker hourly. */

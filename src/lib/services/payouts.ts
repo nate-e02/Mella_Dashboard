@@ -4,10 +4,12 @@ import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/services/audit";
 import { ConflictError, AuthError } from "@/lib/auth/guards";
 import { evaluateAccount } from "@/lib/services/challengeEngine";
+import { computeConsistency } from "@/lib/services/accountMetrics";
 import { roundCurrency } from "@/lib/services/calculations";
 import { notifyUser, alertOps } from "@/lib/services/notifications";
 import type { TemplateSnapshot } from "@/types";
 import { notifyWorkerAccountChanged } from "@/lib/services/settings";
+import { issueCertificate } from "@/lib/services/certificates";
 
 /** Payouts smaller than this are refused (avoids transfer fees eating the amount). */
 export const MIN_PAYOUT_ETB = 500;
@@ -66,6 +68,8 @@ export async function computePayoutAvailability(accountId: string, db: Prisma.Tr
   const available = roundCurrency(Math.max(0, traderShare - alreadyCommitted));
   const kyc = await db.kycSubmission.findFirst({ where: { userId: account.userId, status: "APPROVED" }, select: { id: true } });
   const fundedDays = account.fundedAt ? Math.floor((Date.now() - account.fundedAt.getTime()) / 86_400_000) : 0;
+  // Consistency rule (when the funded template has one), over this funded account's own closed trades.
+  const consistency = await computeConsistency(account, db);
   return {
     account,
     profit,
@@ -75,7 +79,8 @@ export async function computePayoutAvailability(accountId: string, db: Prisma.Tr
     available,
     kycApproved: !!kyc,
     fundedDays,
-    eligible: account.status === "FUNDED" && !!kyc && fundedDays >= MIN_FUNDED_DAYS_BEFORE_PAYOUT && available >= MIN_PAYOUT_ETB,
+    consistency,
+    eligible: account.status === "FUNDED" && !!kyc && fundedDays >= MIN_FUNDED_DAYS_BEFORE_PAYOUT && available >= MIN_PAYOUT_ETB && consistency.ok,
   };
 }
 
@@ -108,6 +113,14 @@ export async function createPayout(input: {
     if (!availability.kycApproved) throw new ConflictError("Identity verification (KYC) must be approved before a payout");
     if (availability.fundedDays < MIN_FUNDED_DAYS_BEFORE_PAYOUT) {
       throw new ConflictError(`First payout is available ${MIN_FUNDED_DAYS_BEFORE_PAYOUT} days after funding`);
+    }
+    if (!availability.consistency.ok) {
+      const c = availability.consistency;
+      throw new ConflictError(
+        c.ratioPercent == null
+          ? `Consistency rule: this account has no net profit yet (your best trading day may be at most ${c.limitPercent}% of total profit)`
+          : `Consistency rule not met: your best trading day is ${c.ratioPercent.toFixed(1)}% of total profit (limit ${c.limitPercent}%). Keep trading to spread your profit over more days.`,
+      );
     }
     if (amount > availability.available) {
       throw new ConflictError(`Amount exceeds available profit share (ETB ${availability.available.toFixed(2)})`);
@@ -221,6 +234,7 @@ async function decidePayoutTx(id: string, status: "APPROVED" | "PAID" | "REJECTE
         ],
         skipDuplicates: true,
       });
+      await issueCertificate(tx, { type: "PAYOUT", userId: before.userId, accountId: before.tradingAccountId, payoutId: before.id, amount: before.amount });
     }
 
     await logAudit(

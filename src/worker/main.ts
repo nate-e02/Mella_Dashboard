@@ -1,5 +1,4 @@
 import "dotenv/config";
-import type { Instrument } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { alertOps } from "@/lib/services/notifications";
 import { TradingBus } from "@/trading/bus";
@@ -7,7 +6,9 @@ import { CandleBuilder } from "@/trading/candles";
 import { CandlePersister, restoreBuilder } from "@/trading/candleStore";
 import { Engine } from "@/trading/engine";
 import { createProvider } from "@/trading/feeds";
-import type { FeedHealth, FeedSymbol, MarketDataProvider } from "@/trading/feeds/types";
+import { planFeeds, subscriptionKey } from "@/trading/feeds/plan";
+import { DEFAULT_FAILBACK_STABLE_MS, DEFAULT_FAILOVER_STALE_MS, FeedRouter, type FeedSwitchEvent } from "@/trading/feeds/router";
+import type { FeedHealth, MarketDataProvider } from "@/trading/feeds/types";
 import { Converter, loadUsdEtbRate } from "@/trading/fx";
 import { Gateway } from "@/trading/gateway";
 import { createHttpServer } from "@/trading/http";
@@ -24,27 +25,7 @@ function requireEnv(name: string): string {
   return v;
 }
 
-/** Which provider actually serves an instrument, honouring the local-dev override. */
-export function effectiveFeedSource(inst: Pick<Instrument, "feedSource">, env: NodeJS.ProcessEnv = process.env): string {
-  const override = (env.FEED_SOURCES_OVERRIDE ?? "").toUpperCase();
-  if (override === "STUB") {
-    if (inst.feedSource.toUpperCase() === "BINANCE" && env.ALLOW_BINANCE === "true") return "BINANCE";
-    return "STUB";
-  }
-  if (override) return override;
-  return inst.feedSource.toUpperCase();
-}
-
-function groupBySource(instruments: Iterable<Instrument>): Map<string, FeedSymbol[]> {
-  const groups = new Map<string, FeedSymbol[]>();
-  for (const inst of instruments) {
-    const source = effectiveFeedSource(inst);
-    const list = groups.get(source) ?? [];
-    list.push({ symbol: inst.symbol, feedSymbol: source === "STUB" ? inst.symbol : inst.feedSymbol, digits: inst.digits });
-    groups.set(source, list);
-  }
-  return groups;
-}
+export { effectiveFeedSource } from "@/trading/feeds/plan";
 
 export async function main() {
   const databaseUrl = requireEnv("DATABASE_URL");
@@ -109,20 +90,49 @@ export async function main() {
   });
   engine.startTimers();
 
-  // Feeds
+  // Feeds. Every provider tick goes through the router, which forwards only
+  // the symbol's active source (primary, or the backup during a failover).
+  const router = new FeedRouter({
+    staleMs: Number(process.env.FEED_FAILOVER_STALE_MS) || DEFAULT_FAILOVER_STALE_MS,
+    stableMs: Number(process.env.FEED_FAILBACK_STABLE_MS) || DEFAULT_FAILBACK_STABLE_MS,
+  });
+  router.onTick((tick) => bus.emit("tick", tick));
+  // One ops alert per burst of switches (a provider outage flips every symbol it serves at once).
+  let pendingSwitches: FeedSwitchEvent[] = [];
+  let switchAlertTimer: NodeJS.Timeout | null = null;
+  router.onSwitch((ev) => {
+    log.warn({ ...ev }, ev.reason === "PRIMARY_STALE" ? "feed: FAILOVER to backup source" : "feed: back on primary source");
+    pendingSwitches.push(ev);
+    switchAlertTimer ??= setTimeout(() => {
+      switchAlertTimer = null;
+      const batch = pendingSwitches;
+      pendingSwitches = [];
+      const groups = new Map<string, string[]>();
+      for (const e of batch) groups.set(`${e.from} -> ${e.to} (${e.reason})`, [...(groups.get(`${e.from} -> ${e.to} (${e.reason})`) ?? []), e.symbol]);
+      void alertOps(`MellaFx feed switch: ${Array.from(groups.entries()).map(([k, syms]) => `${k}: ${syms.join(", ")}`).join("; ")}`);
+    }, 1_000);
+  });
+  const routerTimer = setInterval(() => router.evaluate(), 500);
+
+  // Development only: silence a provider to rehearse a failover (POST /internal/feeds/<source>/pause).
+  const pausedSources = new Set<string>();
   const providers = new Map<string, { provider: MarketDataProvider; symbols: string }>();
   const startProviders = async () => {
-    const groups = groupBySource(engine.instruments.values());
+    const { routes, groups } = planFeeds(engine.instruments.values());
+    router.setRoutes(routes);
     for (const [source, symbols] of groups) {
-      const key = symbols.map((s) => s.symbol).sort().join(",");
+      const key = subscriptionKey(symbols);
       const existing = providers.get(source);
       if (existing && existing.symbols === key) continue;
       if (existing) {
-        log.info({ source }, "feed: instrument set changed, restarting provider");
+        log.info({ source }, "feed: subscription set changed, restarting provider");
         await existing.provider.stop();
       }
       const provider = createProvider(source, { log, stubSeed: Number(process.env.STUB_SEED) || undefined });
-      provider.onTick((tick) => bus.emit("tick", tick));
+      provider.onTick((tick) => {
+        if (pausedSources.size > 0 && pausedSources.has(source)) return;
+        router.ingest(source, tick);
+      });
       await provider.start(symbols);
       providers.set(source, { provider, symbols: key });
       log.info({ source, symbols: symbols.map((s) => s.symbol) }, "feed: started");
@@ -131,14 +141,16 @@ export async function main() {
       if (!groups.has(source)) {
         await entry.provider.stop();
         providers.delete(source);
+        log.info({ source }, "feed: stopped (no longer used)");
       }
     }
   };
   await startProviders();
-  const feedSync = setInterval(() => {
-    void startProviders().catch((err) => log.error({ err: (err as Error).message }, "feed sync failed"));
+  const syncFeeds = async () => {
+    await startProviders();
     for (const inst of engine.instruments.values()) builder.setDigits(inst.symbol, inst.digits);
-  }, 60_000);
+  };
+  const feedSync = setInterval(() => void syncFeeds().catch((err) => log.error({ err: (err as Error).message }, "feed sync failed")), 60_000);
 
   const feedHealth = (): Record<string, FeedHealth> => Object.fromEntries(Array.from(providers.entries()).map(([s, e]) => [s, e.provider.health()]));
 
@@ -155,7 +167,32 @@ export async function main() {
   });
 
   // HTTP + gateway
-  const server = createHttpServer({ engine, feeds: feedHealth, connections: () => gateway.connectionCount(), log, internalToken, startedAt });
+  const server = createHttpServer({
+    engine,
+    feeds: feedHealth,
+    connections: () => gateway.connectionCount(),
+    log,
+    internalToken,
+    startedAt,
+    feedRouter: () => ({ staleMs: router.staleMs, stableMs: router.stableMs, symbols: router.state(), switches: router.recentSwitches(), paused: Array.from(pausedSources) }),
+    feedControl:
+      process.env.NODE_ENV === "production"
+        ? undefined
+        : {
+            setPaused: (source, paused) => {
+              const name = source.toUpperCase();
+              if (!providers.has(name)) return false;
+              if (paused) pausedSources.add(name);
+              else pausedSources.delete(name);
+              log.warn({ source: name, paused }, "feed: provider ticks paused/resumed (dev failover drill)");
+              return true;
+            },
+          },
+    reloadInstruments: async () => {
+      await engine.reloadInstruments();
+      await syncFeeds();
+    },
+  });
   const gateway = new Gateway({ server, bus, engine, log, jwtSecret, maxConnections: Number(process.env.WORKER_MAX_CONNECTIONS) || 10_000 });
   gateway.start();
   await new Promise<void>((resolve) => server.listen(port, resolve));
@@ -175,6 +212,8 @@ export async function main() {
     try {
       jobs.stop();
       clearInterval(feedSync);
+      clearInterval(routerTimer);
+      if (switchAlertTimer) clearTimeout(switchAlertTimer);
       clearInterval(fxTimer);
       for (const e of providers.values()) await e.provider.stop();
       await gateway.stop();

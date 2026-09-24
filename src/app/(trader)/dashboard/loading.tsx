@@ -1,3 +1,7 @@
+"use client";
+
+import { useT } from "@/i18n/client";
+
 function Line({ className }: { className: string }) {
   return <div className={`animate-pulse rounded bg-surface-2 ${className}`} aria-hidden="true" />;
 }
@@ -26,8 +30,9 @@ function CardSkeleton() {
 }
 
 export default function DashboardLoading() {
+  const t = useT();
   return (
-    <div className="flex flex-col gap-6" role="status" aria-label="Loading your dashboard">
+    <div className="flex flex-col gap-6" role="status" aria-label={t("app.loading.dashboard")}>
       <div>
         <Line className="h-7 w-40" />
         <Line className="mt-2 h-4 w-64" />
@@ -44,7 +49,7 @@ export default function DashboardLoading() {
         <CardSkeleton />
         <CardSkeleton />
       </div>
-      <span className="sr-only">Loading…</span>
+      <span className="sr-only">{t("common.loading")}</span>
     </div>
   );
 }

@@ -1,4 +1,8 @@
+"use client";
+
 import { clsx } from "clsx";
+import { useT } from "@/i18n/client";
+import type { MessageKey } from "@/i18n/messages";
 
 type BadgeTone = "default" | "success" | "warning" | "danger" | "info" | "muted";
 
@@ -49,6 +53,17 @@ const STATUS_TONE: Record<string, BadgeTone> = {
   DISABLED: "danger",
 };
 
+/** Localised label for a status enum value (common.status.*); unknown values fall back to the raw value. */
+export function useStatusLabel(): (status: string) => string {
+  const t = useT();
+  return (status) => {
+    const key = `common.status.${status}` as MessageKey;
+    const label = t(key);
+    return label === key ? status.replace(/_/g, " ") : label;
+  };
+}
+
 export function StatusBadge({ status }: { status: string }) {
-  return <Badge tone={STATUS_TONE[status] ?? "default"}>{status.replace(/_/g, " ")}</Badge>;
+  const label = useStatusLabel();
+  return <Badge tone={STATUS_TONE[status] ?? "default"}>{label(status)}</Badge>;
 }

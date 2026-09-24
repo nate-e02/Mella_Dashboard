@@ -11,6 +11,8 @@ import { notifyUser } from "@/lib/services/notifications";
 import { CHAPA_CURRENCY, initializeChapaTransaction, verifyChapaTransaction } from "@/lib/services/chapa";
 import { appUrl } from "@/env";
 import { notifyWorkerAccountChanged } from "@/lib/services/settings";
+import { CouponError, recordCouponRedemption, validateCoupon } from "@/lib/services/coupons";
+import { createReferralRewardForPurchase, voidReferralRewardForPurchase } from "@/lib/services/referrals";
 
 /** Freezes the template AND its whole progression chain (Phase 2 → Funded) at purchase time. */
 export async function buildPurchaseSnapshot(template: Template, db: Prisma.TransactionClient | typeof prisma = prisma): Promise<TemplateSnapshot> {
@@ -63,7 +65,9 @@ function chapaUrls(txRef: string) {
 
 export type InitiatePurchaseResult =
   | { outcome: "REDIRECT"; purchaseId: string; checkoutUrl: string }
-  | { outcome: "ALREADY_PAID"; purchaseId: string };
+  | { outcome: "ALREADY_PAID"; purchaseId: string }
+  /** A 100% coupon: nothing to pay, the challenge was activated immediately. */
+  | { outcome: "ACTIVATED"; purchaseId: string };
 
 /**
  * Starts a real Chapa payment for a Phase 1 template.
@@ -81,11 +85,19 @@ export type InitiatePurchaseResult =
  * re-initializes the same Chapa tx_ref (getting a fresh checkout session
  * without creating a second local Purchase); a retry for an already-PAID
  * attempt is reported back as such instead of charging again.
+ *
+ * Coupons: an optional `couponCode` is validated and priced server-side
+ * (see coupons.ts). The purchase records `listPrice`, `discountAmount` and
+ * `couponId`, and `amount` is the final price - the exact figure Chapa is
+ * asked to charge and later verified against. A retry of the same attempt
+ * keeps the price it was first quoted (the coupon is re-checked, not
+ * re-priced). A 100% coupon skips Chapa entirely and activates at once.
  */
 export async function initiateChapaPurchase(
-  user: { id: string; name: string; email: string },
+  user: { id: string; name: string; email: string | null },
   templateId: string,
   idempotencyKey?: string,
+  opts: { couponCode?: string | null } = {},
   attempt = 0,
 ): Promise<InitiatePurchaseResult> {
   if (idempotencyKey) {
@@ -95,6 +107,23 @@ export async function initiateChapaPurchase(
       if (existing.status === "PAID") return { outcome: "ALREADY_PAID", purchaseId: existing.id };
       if (existing.status === "REFUNDED" || existing.status === "CANCELLED") {
         throw new ConflictError("This purchase attempt is no longer available");
+      }
+      if (existing.amount <= 0) {
+        // A free (100% coupon) attempt never goes to Chapa: finish an
+        // activation that was interrupted, or report why it was refused.
+        if (existing.status !== "PENDING") throw new ConflictError("This purchase attempt is no longer available");
+        return activateFreePurchase(existing.id, user.id);
+      }
+      if (existing.couponId && existing.templateId) {
+        // Honour the quoted price, but not a coupon that has since been
+        // switched off, expired or used up elsewhere.
+        const coupon = await prisma.coupon.findUnique({ where: { id: existing.couponId }, select: { code: true } });
+        const check = coupon ? await validateCoupon({ code: coupon.code, templateId: existing.templateId, userId: user.id, excludePurchaseId: existing.id }) : null;
+        if (!check || !check.ok) {
+          const reason = check && !check.ok ? check.reason : "NOT_FOUND";
+          await markPurchaseFailed(existing.id, `COUPON_${reason}`, "COUPON_NO_LONGER_VALID");
+          throw new CouponError(reason);
+        }
       }
 
       // PENDING or FAILED: retry with the same tx_ref rather than creating a
@@ -109,7 +138,7 @@ export async function initiateChapaPurchase(
       const { checkoutUrl } = await initializeChapaTransaction({
         amount: existing.amount,
         txRef: existing.providerTxRef,
-        email: user.email,
+        email: user.email ?? undefined,
         firstName,
         lastName,
         ...chapaUrls(existing.providerTxRef),
@@ -128,8 +157,17 @@ export async function initiateChapaPurchase(
   }
   if (!(template.price > 0)) throw new Error("This challenge has no price configured");
 
+  let pricing = { amount: template.price, listPrice: template.price, discountAmount: 0, couponId: null as string | null };
+  if (opts.couponCode) {
+    const check = await validateCoupon({ code: opts.couponCode, templateId: template.id, userId: user.id });
+    if (!check.ok) throw new CouponError(check.reason);
+    pricing = { amount: check.finalAmount, listPrice: check.listPrice, discountAmount: check.discount, couponId: check.coupon.id };
+  }
+  const free = pricing.amount <= 0;
+
   const snapshot = await buildPurchaseSnapshot(template);
-  const txRef = generateTxRef();
+  // Free redemptions get a synthetic reference: no Chapa transaction exists.
+  const txRef = free ? `COUPON-${randomBytes(8).toString("hex")}` : generateTxRef();
 
   let purchase;
   try {
@@ -139,8 +177,12 @@ export async function initiateChapaPurchase(
         templateId: template.id,
         status: "PENDING",
         // Authoritative price straight from the database - never from the
-        // client. Chapa currency is fixed to ETB; no conversion is performed.
-        amount: template.price,
+        // client - less a server-validated coupon discount. Chapa currency is
+        // fixed to ETB; no conversion is performed.
+        amount: pricing.amount,
+        listPrice: pricing.listPrice,
+        discountAmount: pricing.discountAmount,
+        couponId: pricing.couponId,
         currency: CHAPA_CURRENCY,
         providerTxRef: txRef,
         idempotencyKey: idempotencyKey ?? null,
@@ -152,10 +194,12 @@ export async function initiateChapaPurchase(
       // Lost a race against another concurrent request with the same key
       // (e.g. a double-click) that already inserted the Purchase row -
       // retry the whole call so it takes the "existing" branch above.
-      return initiateChapaPurchase(user, templateId, idempotencyKey, attempt + 1);
+      return initiateChapaPurchase(user, templateId, idempotencyKey, opts, attempt + 1);
     }
     throw err;
   }
+
+  if (free) return activateFreePurchase(purchase.id, user.id);
 
   const { firstName, lastName } = splitName(user.name);
 
@@ -164,7 +208,7 @@ export async function initiateChapaPurchase(
     const result = await initializeChapaTransaction({
       amount: purchase.amount,
       txRef,
-      email: user.email,
+      email: user.email ?? undefined,
       firstName,
       lastName,
       ...chapaUrls(txRef),
@@ -183,13 +227,28 @@ export async function initiateChapaPurchase(
     action: "CHAPA_PAYMENT_INITIATED",
     targetType: "Purchase",
     targetId: purchase.id,
-    after: { templateId: template.id, amount: purchase.amount, currency: purchase.currency, txRef },
+    after: { templateId: template.id, amount: purchase.amount, listPrice: purchase.listPrice, discountAmount: purchase.discountAmount, couponId: purchase.couponId, currency: purchase.currency, txRef },
   });
 
   return { outcome: "REDIRECT", purchaseId: purchase.id, checkoutUrl };
 }
 
-type ActivationSource = { source: "CHAPA" } | { source: "ADMIN_TEST"; adminId: string };
+/**
+ * Activates a 0 ETB (100% coupon) purchase without Chapa. If the coupon was
+ * used up meanwhile (the atomic check in recordCouponRedemption), the
+ * attempt is marked FAILED and the coupon reason is surfaced to the trader.
+ */
+async function activateFreePurchase(purchaseId: string, userId: string): Promise<InitiatePurchaseResult> {
+  try {
+    await activatePurchase(purchaseId, { source: "COUPON", userId });
+    return { outcome: "ACTIVATED", purchaseId };
+  } catch (err) {
+    if (err instanceof CouponError) await markPurchaseFailed(purchaseId, `COUPON_${err.reason}`, "COUPON_REDEMPTION_REFUSED");
+    throw err;
+  }
+}
+
+type ActivationSource = { source: "CHAPA" } | { source: "ADMIN_TEST"; adminId: string } | { source: "COUPON"; userId: string };
 
 /**
  * Marks a Purchase PAID and runs the existing TradingAccount-creation logic
@@ -241,6 +300,13 @@ async function activatePurchaseTx(purchaseId: string, activation: ActivationSour
       return { purchase: current, account: current.tradingAccount };
     }
 
+    // Growth hooks, in the same transaction as the PAID claim: count the
+    // coupon redemption (may refuse a free one - rolls everything back) and
+    // credit the buyer's referrer (never for an admin test activation, which
+    // involves no real money).
+    await recordCouponRedemption(tx, purchase);
+    if (activation.source !== "ADMIN_TEST") await createReferralRewardForPurchase(tx, purchase);
+
     const snapshot = purchase.snapshot as unknown as TemplateSnapshot;
 
     let account = purchase.tradingAccount;
@@ -276,7 +342,12 @@ async function activatePurchaseTx(purchaseId: string, activation: ActivationSour
           currency: purchase.currency,
           refType: "Purchase",
           refId: purchase.id,
-          note: activation.source === "ADMIN_TEST" ? "ADMIN TEST ACTIVATION - no real payment" : `Chapa ${purchase.providerTxRef}`,
+          note:
+            activation.source === "ADMIN_TEST"
+              ? "ADMIN TEST ACTIVATION - no real payment"
+              : activation.source === "COUPON"
+                ? `Free with coupon (list price ${purchase.listPrice ?? "?"}, discount ${purchase.discountAmount})`
+                : `Chapa ${purchase.providerTxRef}`,
         },
       ],
       skipDuplicates: true,
@@ -284,11 +355,12 @@ async function activatePurchaseTx(purchaseId: string, activation: ActivationSour
 
     await logAudit(
       {
-        actorId: activation.source === "ADMIN_TEST" ? activation.adminId : null,
-        action: activation.source === "ADMIN_TEST" ? "PURCHASE_MARKED_PAID_BY_ADMIN_TEST" : "CHAPA_PAYMENT_VERIFIED",
+        actorId: activation.source === "ADMIN_TEST" ? activation.adminId : activation.source === "COUPON" ? activation.userId : null,
+        action:
+          activation.source === "ADMIN_TEST" ? "PURCHASE_MARKED_PAID_BY_ADMIN_TEST" : activation.source === "COUPON" ? "PURCHASE_ACTIVATED_BY_FREE_COUPON" : "CHAPA_PAYMENT_VERIFIED",
         targetType: "Purchase",
         targetId: purchase.id,
-        after: { accountId: account.id, source: activation.source, amount: purchase.amount, currency: purchase.currency },
+        after: { accountId: account.id, source: activation.source, amount: purchase.amount, currency: purchase.currency, couponId: purchase.couponId, discountAmount: purchase.discountAmount },
       },
       tx,
     );
@@ -310,7 +382,7 @@ async function activatePurchaseTx(purchaseId: string, activation: ActivationSour
 }
 
 /** Flips a still-PENDING purchase to FAILED; a no-op for any other status. */
-async function markPurchaseFailed(purchaseId: string, reason: string) {
+async function markPurchaseFailed(purchaseId: string, reason: string, action = "CHAPA_PAYMENT_FAILED") {
   return prisma.$transaction(async (tx) => {
     const before = await tx.purchase.findUniqueOrThrow({ where: { id: purchaseId } });
     if (before.status !== "PENDING") return;
@@ -320,7 +392,7 @@ async function markPurchaseFailed(purchaseId: string, reason: string) {
       await logAudit(
         {
           actorId: null,
-          action: "CHAPA_PAYMENT_FAILED",
+          action,
           targetType: "Purchase",
           targetId: purchaseId,
           before: { status: before.status },
@@ -404,7 +476,7 @@ export async function verifyAndCompleteChapaPurchase(providerTxRef: string): Pro
 export async function listPurchasesForUser(userId: string, take = 100) {
   return prisma.purchase.findMany({
     where: { userId },
-    include: { template: { select: { id: true, name: true } }, tradingAccount: true },
+    include: { template: { select: { id: true, name: true } }, tradingAccount: true, coupon: { select: { code: true } } },
     orderBy: { createdAt: "desc" },
     take,
   });
@@ -455,6 +527,7 @@ export async function refundPurchase(purchaseId: string, actorId: string) {
       skipDuplicates: true,
     });
     const suspended = await suspendPurchaseAccounts(tx, purchaseId, actorId, "PURCHASE_REFUNDED");
+    await voidReferralRewardForPurchase(tx, purchaseId, actorId, "PURCHASE_REFUNDED");
     await logAudit(
       {
         actorId,
@@ -482,6 +555,7 @@ export async function cancelPurchase(purchaseId: string, actorId: string) {
       data: { status: "CANCELLED", cancelledAt: new Date() },
     });
     const suspended = await suspendPurchaseAccounts(tx, purchaseId, actorId, "PURCHASE_CANCELLED");
+    await voidReferralRewardForPurchase(tx, purchaseId, actorId, "PURCHASE_CANCELLED");
     await logAudit(
       {
         actorId,

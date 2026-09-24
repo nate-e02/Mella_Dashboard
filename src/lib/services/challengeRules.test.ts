@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { determineChallengeTransition, isLegalManualTransition, maxDrawdownFloor, type ChallengeDecisionInput } from "@/lib/services/challengeRules";
+import { consistencyCheck, determineChallengeTransition, isLegalManualTransition, maxDrawdownFloor, type ChallengeDecisionInput } from "@/lib/services/challengeRules";
 
 const BASE_SNAPSHOT = { maxDrawdown: 10, dailyDrawdown: 5, profitTarget: 8, minTradingDays: 5 };
 
@@ -190,6 +190,54 @@ describe("determineChallengeTransition - terminal / already-decided accounts", (
     expect(decision.nextStatus).toBe("ACTIVE");
     expect(decision.ddBreach).toBe(false);
     expect(decision.dailyBreach).toBe(false);
+  });
+});
+
+describe("consistencyCheck", () => {
+  it("is disabled (always ok) without a positive limit", () => {
+    expect(consistencyCheck({ dailyNetProfits: [900, 100], limitPercent: null })).toMatchObject({ enabled: false, ok: true, bestDay: 900, total: 1000, ratioPercent: 90 });
+    expect(consistencyCheck({ dailyNetProfits: [900], limitPercent: 0 }).ok).toBe(true);
+  });
+
+  it("passes when the best day is at most the limit, cent-exact", () => {
+    // best 400 of 1000 = 40% against a 40% limit -> ok
+    expect(consistencyCheck({ dailyNetProfits: [400, 300, 300], limitPercent: 40 })).toEqual({ enabled: true, ok: true, limitPercent: 40, bestDay: 400, total: 1000, ratioPercent: 40 });
+    // one cent over the limit -> not ok
+    const over = consistencyCheck({ dailyNetProfits: [400.01, 300, 299.99], limitPercent: 40 });
+    expect(over.ok).toBe(false);
+    expect(over.ratioPercent).toBe(40);
+  });
+
+  it("measures against net profit including losing days", () => {
+    // 600 + 300 - 200 = 700 total; best 600 = 85.71% -> fails a 50% limit
+    const r = consistencyCheck({ dailyNetProfits: [600, 300, -200], limitPercent: 50 });
+    expect(r).toMatchObject({ ok: false, bestDay: 600, total: 700, ratioPercent: 85.71 });
+  });
+
+  it("is not evaluable (not ok) while the total is not positive", () => {
+    expect(consistencyCheck({ dailyNetProfits: [], limitPercent: 40 })).toMatchObject({ ok: false, total: 0, bestDay: 0, ratioPercent: null });
+    expect(consistencyCheck({ dailyNetProfits: [100, -300], limitPercent: 40 })).toMatchObject({ ok: false, ratioPercent: null });
+  });
+});
+
+describe("determineChallengeTransition - consistency", () => {
+  it("keeps an inconsistent account ACTIVE at target instead of passing, and never fails it for that", () => {
+    const decision = determineChallengeTransition(baseInput({ netPnl: 900, equity: 10900, consistency: { ok: false } }));
+    expect(decision.meetsTarget).toBe(true);
+    expect(decision.meetsConsistency).toBe(false);
+    expect(decision.nextStatus).toBe("ACTIVE");
+    expect(decision.failureReason).toBeNull();
+  });
+
+  it("passes once consistent, and treats a missing consistency input as met", () => {
+    expect(determineChallengeTransition(baseInput({ netPnl: 900, equity: 10900, consistency: { ok: true } })).nextStatus).toBe("PASSED");
+    expect(determineChallengeTransition(baseInput({ netPnl: 900, equity: 10900, consistency: null })).nextStatus).toBe("PASSED");
+  });
+
+  it("still fails on a drawdown breach or on expiry while inconsistent", () => {
+    expect(determineChallengeTransition(baseInput({ netPnl: 900, equity: 8900, dailyAnchorBalance: 8900, consistency: { ok: false } })).failureReason).toBe("MAX_DRAWDOWN");
+    // Time ran out before all objectives (including consistency) were met: the expiry rule decides.
+    expect(determineChallengeTransition(baseInput({ netPnl: 900, equity: 10900, expired: true, consistency: { ok: false } })).failureReason).toBe("EXPIRED");
   });
 });
 

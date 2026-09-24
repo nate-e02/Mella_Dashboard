@@ -1,3 +1,5 @@
+import type { NewsEvent } from "@/trading/news";
+
 /**
  * Wire protocol shared by the trading worker (WebSocket gateway + engine)
  * and the browser terminal. JSON messages, one object per frame.
@@ -47,6 +49,13 @@ export type PositionInfo = {
   marginUsed: number;
   openedAt: string;
 };
+
+/**
+ * Upcoming HIGH-impact economic events (next 24 h) and the ± window around
+ * each, carried on `market.status`. Only accounts whose challenge forbids
+ * news trading are restricted; the terminal filters by the account's rules.
+ */
+export type MarketNews = { windowMinutes: number; events: NewsEvent[] };
 
 export type AccountState = {
   accountId: string;
@@ -101,7 +110,7 @@ export type ServerMessage =
   | { type: "account"; account: AccountState }
   | { type: "order.result"; clientOrderId: string; status: "FILLED" | "REJECTED" | "PENDING"; orderId?: string; positionId?: string; filledPrice?: number; reason?: string }
   | { type: "position"; accountId: string; event: "OPENED" | "CLOSED" | "MODIFIED"; position: PositionInfo; closeReason?: string; realizedPnl?: number }
-  | { type: "market.status"; state: MarketState; reason?: string; symbols?: Record<string, { lastTickAt: number | null; stale: boolean }> }
+  | { type: "market.status"; state: MarketState; reason?: string; symbols?: Record<string, { lastTickAt: number | null; stale: boolean }>; news?: MarketNews }
   | { type: "pong"; serverTime: number };
 
 /** Channel names */

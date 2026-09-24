@@ -3,8 +3,11 @@
 import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useT } from "@/i18n/client";
+import { AuthShell, FormAlert } from "@/components/shared/AuthShell";
 
 function ResetForm() {
+  const t = useT();
   const params = useSearchParams();
   const router = useRouter();
   const token = params.get("token") ?? "";
@@ -18,7 +21,7 @@ function ResetForm() {
     e.preventDefault();
     setError(null);
     if (password !== confirm) {
-      setError("Passwords do not match");
+      setError(t("auth.reset.mismatch"));
       return;
     }
     setLoading(true);
@@ -30,7 +33,7 @@ function ResetForm() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(body.error || body.issues?.[0]?.message || "Could not reset password");
+        setError(body.error || body.issues?.[0]?.message || t("auth.reset.failed"));
         return;
       }
       setDone(true);
@@ -41,48 +44,47 @@ function ResetForm() {
   }
 
   if (!token) {
-    return <p className="text-sm text-danger">This reset link is missing its token. Request a new one.</p>;
+    return <p className="text-sm text-danger">{t("auth.reset.missingToken")}</p>;
   }
 
   return done ? (
-    <div className="rounded-lg bg-success/10 px-3 py-2 text-sm text-success">Password updated. Redirecting to login…</div>
+    <FormAlert tone="success">{t("auth.reset.done")}</FormAlert>
   ) : (
     <form onSubmit={submit} className="flex flex-col gap-3">
-      {error && (
-        <div role="alert" className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">
-          {error}
-        </div>
-      )}
+      {error && <FormAlert>{error}</FormAlert>}
       <label className="flex flex-col gap-1 text-sm">
-        <span className="font-medium">New password</span>
+        <span className="font-medium">{t("auth.reset.newPassword")}</span>
         <input type="password" autoComplete="new-password" className="input-base" value={password} onChange={(e) => setPassword(e.target.value)} minLength={12} required />
-        <span className="text-xs text-muted">At least 12 characters.</span>
+        <span className="text-xs text-muted">{t("auth.reset.hint")}</span>
       </label>
       <label className="flex flex-col gap-1 text-sm">
-        <span className="font-medium">Confirm password</span>
+        <span className="font-medium">{t("auth.reset.confirm")}</span>
         <input type="password" autoComplete="new-password" className="input-base" value={confirm} onChange={(e) => setConfirm(e.target.value)} required />
       </label>
       <button type="submit" className="btn-primary" disabled={loading}>
-        {loading ? "Saving..." : "Set new password"}
+        {loading ? t("common.saving") : t("auth.reset.submit")}
       </button>
     </form>
   );
 }
 
+function Loading() {
+  const t = useT();
+  return <div className="text-sm text-muted">{t("common.loading")}</div>;
+}
+
 export default function ResetPasswordPage() {
+  const t = useT();
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <div className="card w-full max-w-sm p-6">
-        <h1 className="mb-4 text-xl font-semibold">Choose a new password</h1>
-        <Suspense fallback={<div className="text-sm text-muted">Loading…</div>}>
-          <ResetForm />
-        </Suspense>
-        <p className="mt-4 text-center text-xs text-muted">
-          <Link href="/login" className="hover:text-foreground">
-            ← Back to login
-          </Link>
-        </p>
-      </div>
-    </div>
+    <AuthShell title={t("auth.reset.title")}>
+      <Suspense fallback={<Loading />}>
+        <ResetForm />
+      </Suspense>
+      <p className="mt-4 text-center text-xs text-muted">
+        <Link href="/login" className="hover:text-foreground">
+          {t("auth.backToLogin")}
+        </Link>
+      </p>
+    </AuthShell>
   );
 }

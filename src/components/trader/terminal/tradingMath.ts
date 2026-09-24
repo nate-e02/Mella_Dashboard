@@ -1,8 +1,10 @@
+import type { MessageKey } from "@/i18n/messages";
 import { TIMEFRAME_SECONDS, type InstrumentInfo, type OrderKind, type Side, type Timeframe } from "@/trading/protocol";
 
 /**
  * Pure, client-safe helpers for the order ticket and chart. Estimates only:
- * the worker is the source of truth for fills, margin and P&L.
+ * the worker is the source of truth for fills, margin and P&L. Validators
+ * return message keys (translated by the caller), never display text.
  */
 
 /** Bucket start (unix seconds) for a tick timestamp; mirrors the server's bucketStart. */
@@ -84,17 +86,17 @@ export function marketFillPrice(side: Side, bid: number, ask: number): number {
  * Where a pending order must sit relative to the market:
  * a LIMIT buys below / sells above the current price; a STOP buys above / sells below.
  */
-export function validatePendingPrice(input: { orderType: OrderKind; side: Side; price: number | null; bid: number | null; ask: number | null }): string | null {
+export function validatePendingPrice(input: { orderType: OrderKind; side: Side; price: number | null; bid: number | null; ask: number | null }): MessageKey | null {
   if (input.orderType === "MARKET") return null;
-  if (input.price == null || !Number.isFinite(input.price) || input.price <= 0) return "Enter the order price";
+  if (input.price == null || !Number.isFinite(input.price) || input.price <= 0) return "trading.validation.enterPrice";
   if (input.bid == null || input.ask == null) return null; // cannot check without a quote; the server will
   const ref = input.side === "BUY" ? input.ask : input.bid;
   if (input.orderType === "LIMIT") {
-    if (input.side === "BUY" && input.price >= ref) return "A buy limit must be below the ask";
-    if (input.side === "SELL" && input.price <= ref) return "A sell limit must be above the bid";
+    if (input.side === "BUY" && input.price >= ref) return "trading.validation.buyLimitBelowAsk";
+    if (input.side === "SELL" && input.price <= ref) return "trading.validation.sellLimitAboveBid";
   } else {
-    if (input.side === "BUY" && input.price <= ref) return "A buy stop must be above the ask";
-    if (input.side === "SELL" && input.price >= ref) return "A sell stop must be below the bid";
+    if (input.side === "BUY" && input.price <= ref) return "trading.validation.buyStopAboveAsk";
+    if (input.side === "SELL" && input.price >= ref) return "trading.validation.sellStopBelowBid";
   }
   return null;
 }
@@ -105,19 +107,19 @@ export function validateProtectiveLevels(input: {
   entry: number | null;
   stopLoss: number | null;
   takeProfit: number | null;
-}): { stopLoss: string | null; takeProfit: string | null } {
-  const out = { stopLoss: null as string | null, takeProfit: null as string | null };
+}): { stopLoss: MessageKey | null; takeProfit: MessageKey | null } {
+  const out = { stopLoss: null as MessageKey | null, takeProfit: null as MessageKey | null };
   const { side, entry, stopLoss, takeProfit } = input;
-  if (stopLoss != null && (!Number.isFinite(stopLoss) || stopLoss <= 0)) out.stopLoss = "Invalid stop loss";
-  if (takeProfit != null && (!Number.isFinite(takeProfit) || takeProfit <= 0)) out.takeProfit = "Invalid take profit";
+  if (stopLoss != null && (!Number.isFinite(stopLoss) || stopLoss <= 0)) out.stopLoss = "trading.validation.invalidStopLoss";
+  if (takeProfit != null && (!Number.isFinite(takeProfit) || takeProfit <= 0)) out.takeProfit = "trading.validation.invalidTakeProfit";
   if (entry == null || !Number.isFinite(entry)) return out;
   if (stopLoss != null && !out.stopLoss) {
-    if (side === "BUY" && stopLoss >= entry) out.stopLoss = "Stop loss must be below the entry for a buy";
-    if (side === "SELL" && stopLoss <= entry) out.stopLoss = "Stop loss must be above the entry for a sell";
+    if (side === "BUY" && stopLoss >= entry) out.stopLoss = "trading.validation.slBelowEntryBuy";
+    if (side === "SELL" && stopLoss <= entry) out.stopLoss = "trading.validation.slAboveEntrySell";
   }
   if (takeProfit != null && !out.takeProfit) {
-    if (side === "BUY" && takeProfit <= entry) out.takeProfit = "Take profit must be above the entry for a buy";
-    if (side === "SELL" && takeProfit >= entry) out.takeProfit = "Take profit must be below the entry for a sell";
+    if (side === "BUY" && takeProfit <= entry) out.takeProfit = "trading.validation.tpAboveEntryBuy";
+    if (side === "SELL" && takeProfit >= entry) out.takeProfit = "trading.validation.tpBelowEntrySell";
   }
   return out;
 }
@@ -137,9 +139,9 @@ export function signed(value: number, formatted: string): string {
   return formatted;
 }
 
-export const CATEGORY_LABEL: Record<InstrumentInfo["category"], string> = {
-  FOREX: "FX",
-  METAL: "Metals",
-  CRYPTO: "Crypto",
-  INDEX: "Indices",
+export const CATEGORY_LABEL: Record<InstrumentInfo["category"], MessageKey> = {
+  FOREX: "trading.category.FOREX",
+  METAL: "trading.category.METAL",
+  CRYPTO: "trading.category.CRYPTO",
+  INDEX: "trading.category.INDEX",
 };

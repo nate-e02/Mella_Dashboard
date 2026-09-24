@@ -1,6 +1,11 @@
+"use client";
+
+import { useT } from "@/i18n/client";
+
 export default function TraderLoading() {
+  const t = useT();
   return (
-    <div className="flex flex-col gap-4" aria-busy="true" aria-label="Loading">
+    <div className="flex flex-col gap-4" aria-busy="true" aria-label={t("app.loading.page")}>
       <div className="h-7 w-48 animate-pulse rounded bg-white/5" />
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         {Array.from({ length: 4 }).map((_, i) => (

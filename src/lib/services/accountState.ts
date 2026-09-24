@@ -1,9 +1,9 @@
 import "server-only";
 import type { AccountStatus, Prisma, TemplatePhase } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { computeAccountMetricsFromDb } from "@/lib/services/accountMetrics";
+import { computeAccountMetricsFromDb, computeConsistency } from "@/lib/services/accountMetrics";
 import { roundCurrency } from "@/lib/services/calculations";
-import { maxDrawdownFloor } from "@/lib/services/challengeRules";
+import { maxDrawdownFloor, type ConsistencyResult } from "@/lib/services/challengeRules";
 import type { TemplateSnapshot } from "@/types";
 import type { AccountState, PositionInfo } from "@/trading/protocol";
 
@@ -37,6 +37,15 @@ const accountSelect = {
 
 type AccountRow = Prisma.TradingAccountGetPayload<{ select: typeof accountSelect }>;
 
+/** The challenge's holding / news / consistency rules (legacy snapshots without a flag allow it). */
+export type AccountRules = {
+  weekendHoldingAllowed: boolean;
+  overnightHoldingAllowed: boolean;
+  newsTradingAllowed: boolean;
+  /** Best day may be at most this % of total profit; null = no consistency rule. */
+  consistencyLimitPercent: number | null;
+};
+
 /** Account facts the UI needs alongside the live state (name, phase, dates). */
 export type AccountMeta = {
   id: string;
@@ -49,9 +58,11 @@ export type AccountMeta = {
   expiresAt: string | null;
   failureReason: string | null;
   tradable: boolean;
+  rules: AccountRules;
 };
 
-export type AccountStateEntry = { meta: AccountMeta; state: AccountState };
+/** `consistency` is null when the challenge has no consistency rule. */
+export type AccountStateEntry = { meta: AccountMeta; state: AccountState; consistency: ConsistencyResult | null };
 
 export function toPositionInfo(p: {
   id: string;
@@ -100,7 +111,23 @@ export function toAccountMeta(row: AccountRow): AccountMeta {
     expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
     failureReason: row.failureReason,
     tradable: TRADABLE_STATUSES.includes(row.status),
+    rules: rulesOf(snap),
   };
+}
+
+export function rulesOf(snap: Partial<TemplateSnapshot>): AccountRules {
+  const limit = snap.consistencyRequirement;
+  return {
+    weekendHoldingAllowed: snap.weekendHoldingAllowed !== false,
+    overnightHoldingAllowed: snap.overnightHoldingAllowed !== false,
+    newsTradingAllowed: snap.newsTradingAllowed !== false,
+    consistencyLimitPercent: limit != null && limit > 0 ? limit : null,
+  };
+}
+
+async function consistencyForRow(row: AccountRow): Promise<ConsistencyResult | null> {
+  if (rulesOf(snapshotOf(row)).consistencyLimitPercent == null) return null;
+  return computeConsistency({ id: row.id, snapshot: row.snapshot });
 }
 
 async function stateForRow(row: AccountRow): Promise<AccountState> {
@@ -167,7 +194,8 @@ export async function computeAccountState(accountId: string): Promise<AccountSta
 export async function getAccountStateEntry(accountId: string): Promise<AccountStateEntry | null> {
   const row = await prisma.tradingAccount.findUnique({ where: { id: accountId }, select: accountSelect });
   if (!row) return null;
-  return { meta: toAccountMeta(row), state: await stateForRow(row) };
+  const [state, consistency] = await Promise.all([stateForRow(row), consistencyForRow(row)]);
+  return { meta: toAccountMeta(row), state, consistency };
 }
 
 /** Every account of a user, newest first, each with its computed state. */
@@ -175,7 +203,7 @@ export async function listUserAccountStates(userId: string): Promise<AccountStat
   const rows = await prisma.tradingAccount.findMany({ where: { userId }, orderBy: { createdAt: "desc" }, select: accountSelect });
   const entries: AccountStateEntry[] = [];
   // Few accounts per user; sequential keeps the connection pool free for the app.
-  for (const row of rows) entries.push({ meta: toAccountMeta(row), state: await stateForRow(row) });
+  for (const row of rows) entries.push({ meta: toAccountMeta(row), state: await stateForRow(row), consistency: await consistencyForRow(row) });
   return entries;
 }
 

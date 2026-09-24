@@ -10,7 +10,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
 
   return (
     <ToastProvider>
-      <AdminShell email={user.email}>{children}</AdminShell>
+      <AdminShell email={user.email ?? user.phone ?? user.name}>{children}</AdminShell>
     </ToastProvider>
   );
 }

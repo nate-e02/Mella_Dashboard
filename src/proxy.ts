@@ -26,6 +26,16 @@ const RULES: Rule[] = [
   { match: (p, m) => p === "/api/trader/purchases" && m === "POST", limit: 10, windowSec: 60, scope: "ip" },
   { match: (p) => WEBHOOK_PATHS.has(p), limit: 120, windowSec: 60, scope: "ip" },
   { match: (p) => p === "/api/payments/chapa/callback", limit: 30, windowSec: 60, scope: "ip" },
+  { match: (p, m) => p === "/api/auth/otp/request" && m === "POST", limit: 5, windowSec: 600, scope: "ip" },
+  { match: (p, m) => p === "/api/auth/otp/verify" && m === "POST", limit: 15, windowSec: 600, scope: "ip" },
+  { match: (p, m) => p === "/api/auth/otp/complete" && m === "POST", limit: 10, windowSec: 3600, scope: "ip" },
+  // Sends an SMS to a caller-chosen number: keep as tight as the public OTP endpoint.
+  { match: (p, m) => p === "/api/account/otp/request" && m === "POST", limit: 5, windowSec: 600, scope: "ip" },
+  { match: (p, m) => p === "/api/account/phone" && m === "POST", limit: 15, windowSec: 600, scope: "ip" },
+  { match: (p, m) => p === "/api/account/password" && m === "POST", limit: 10, windowSec: 3600, scope: "ip" },
+  { match: (p, m) => p === "/api/account/email" && m === "POST", limit: 5, windowSec: 3600, scope: "ip" },
+  { match: (p, m) => p === "/api/trader/coupons/validate" && m === "POST", limit: 20, windowSec: 60, scope: "ip" },
+  { match: (p, m) => p === "/api/locale" && m === "POST", limit: 30, windowSec: 60, scope: "ip" },
   { match: (p) => p.startsWith("/api/"), limit: 300, windowSec: 60, scope: "ip" },
 ];
 

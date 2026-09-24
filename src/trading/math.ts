@@ -99,6 +99,10 @@ export type RejectCode =
   | "INSUFFICIENT_MARGIN"
   | "NO_FX_PATH"
   | "MARKET_HALTED"
+  // Challenge holding / news rules (only for accounts whose template forbids them; crypto is exempt from the session rules)
+  | "WEEKEND_CLOSED"
+  | "OVERNIGHT_CLOSED"
+  | "NEWS_WINDOW"
   | "UNKNOWN_SYMBOL"
   | "ACCOUNT_NOT_TRADABLE"
   | "FORBIDDEN"

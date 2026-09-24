@@ -5,6 +5,7 @@ import { hashPassword } from "@/lib/auth/password";
 import { logAudit } from "@/lib/services/audit";
 import { revokeAllSessionsForUser } from "@/lib/auth/session";
 import { ConflictError } from "@/lib/auth/guards";
+import { normalizePhone } from "@/lib/phone";
 
 /** Fields safe to return from the API - never include passwordHash. */
 const SAFE_USER_SELECT = {
@@ -29,9 +30,14 @@ export async function listUsers(params: {
   if (params.role && params.role !== "ALL") where.role = params.role;
   if (params.status && params.status !== "ALL") where.status = params.status;
   if (params.search) {
+    // Phones are stored as E.164, so "0911 234 567" is matched as "+251911234567"; partial digits match too.
+    const phone = normalizePhone(params.search);
+    const digits = params.search.replace(/\D/g, "");
     where.OR = [
       { name: { contains: params.search, mode: "insensitive" } },
       { email: { contains: params.search, mode: "insensitive" } },
+      ...(phone ? [{ phone }] : []),
+      ...(digits.length >= 4 ? [{ phone: { contains: digits.replace(/^0/, "") } }] : []),
     ];
   }
 
@@ -45,6 +51,8 @@ export async function listUsers(params: {
         ...SAFE_USER_SELECT,
         mfaEnabled: true,
         emailVerifiedAt: true,
+        phone: true,
+        phoneVerifiedAt: true,
         _count: { select: { tradingAccounts: true, purchases: true } },
         kycSubmissions: { orderBy: { submittedAt: "desc" }, take: 1, select: { status: true } },
       },
@@ -70,6 +78,8 @@ export async function listUsers(params: {
     lastActivityAt: u.lastActivityAt,
     mfaEnabled: u.mfaEnabled,
     emailVerified: !!u.emailVerifiedAt,
+    phone: u.phone,
+    phoneVerified: !!u.phoneVerifiedAt,
     accountCount: u._count.tradingAccounts,
     activeAccounts: accountCounts.find((c) => c.userId === u.id && c.status === "ACTIVE")?._count._all ?? 0,
     fundedAccounts: accountCounts.find((c) => c.userId === u.id && c.status === "FUNDED")?._count._all ?? 0,
@@ -89,6 +99,7 @@ export async function getUserDetail(id: string) {
       mfaEnabled: true,
       emailVerifiedAt: true,
       phone: true,
+      phoneVerifiedAt: true,
       tradingAccounts: { include: { template: { select: { name: true } } }, orderBy: { createdAt: "desc" }, take: 50 },
       purchases: { include: { template: { select: { name: true } } }, orderBy: { createdAt: "desc" }, take: 50 },
       kycSubmissions: { orderBy: { submittedAt: "desc" }, take: 20 },

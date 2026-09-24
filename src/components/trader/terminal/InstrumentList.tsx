@@ -2,6 +2,7 @@
 
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { clsx } from "clsx";
+import { useT } from "@/i18n/client";
 import type { InstrumentInfo, Tick } from "@/trading/protocol";
 import type { MarketStatus } from "@/lib/hooks/useTradingSocket";
 import { CATEGORY_LABEL, formatPrice, spreadPoints } from "./tradingMath";
@@ -57,6 +58,7 @@ const Row = memo(function Row({
   stale: boolean;
   onSelect: (symbol: string) => void;
 }) {
+  const t = useT();
   const bid = tick?.bid ?? null;
   const ask = tick?.ask ?? null;
   const spread = bid != null && ask != null ? spreadPoints(bid, ask, instrument.digits) : null;
@@ -65,7 +67,7 @@ const Row = memo(function Row({
       type="button"
       onClick={() => onSelect(instrument.symbol)}
       aria-pressed={selected}
-      aria-label={`${instrument.displayName}${bid != null ? `, bid ${formatPrice(bid, instrument.digits)}, ask ${formatPrice(ask, instrument.digits)}` : ""}`}
+      aria-label={bid != null ? t("trading.instruments.rowAria", { name: instrument.displayName, bid: formatPrice(bid, instrument.digits), ask: formatPrice(ask, instrument.digits) }) : instrument.displayName}
       className={clsx(
         "flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left transition",
         selected ? "bg-accent-2/15" : "hover:bg-white/5",
@@ -74,8 +76,8 @@ const Row = memo(function Row({
       <div className="min-w-0">
         <div className={clsx("truncate text-xs font-semibold", selected ? "text-accent-2" : "text-foreground")}>{instrument.symbol}</div>
         <div className="truncate text-[10px] text-muted">
-          {spread != null ? `${spread} pts` : instrument.displayName}
-          {stale && <span className="ml-1 text-warning">stale</span>}
+          {spread != null ? t("trading.instruments.points", { points: spread }) : instrument.displayName}
+          {stale && <span className="ml-1 text-warning">{t("trading.instruments.stale")}</span>}
         </div>
       </div>
       <div className="flex flex-col items-end">
@@ -99,6 +101,7 @@ export function InstrumentList({
   lastTick: Map<string, Tick>;
   marketState: MarketStatus | null;
 }) {
+  const t = useT();
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<Category>("ALL");
 
@@ -123,7 +126,7 @@ export function InstrumentList({
       <div className="card flex flex-col gap-2 p-2 lg:hidden">
         <div className="flex items-center gap-2">
           <label className="sr-only" htmlFor="instrument-select">
-            Instrument
+            {t("trading.instruments.instrument")}
           </label>
           <select id="instrument-select" className="input-base !w-auto flex-1 !py-1.5" value={selected} onChange={(e) => onSelect(e.target.value)}>
             {instruments.map((i) => (
@@ -139,7 +142,7 @@ export function InstrumentList({
             </div>
           )}
         </div>
-        <div className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-1" role="tablist" aria-label="Quick instruments">
+        <div className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-1" role="tablist" aria-label={t("trading.instruments.quick")}>
           {instruments.slice(0, 12).map((i) => {
             const active = i.symbol === selected;
             return (
@@ -167,12 +170,12 @@ export function InstrumentList({
           <input
             type="search"
             className="input-base !py-1.5 text-xs"
-            placeholder="Search symbol"
-            aria-label="Search instruments"
+            placeholder={t("trading.instruments.search")}
+            aria-label={t("trading.instruments.searchAria")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <div className="flex flex-wrap gap-1" role="tablist" aria-label="Instrument categories">
+          <div className="flex flex-wrap gap-1" role="tablist" aria-label={t("trading.instruments.categories")}>
             {(["ALL", ...categories] as Category[]).map((c) => (
               <button
                 key={c}
@@ -185,14 +188,14 @@ export function InstrumentList({
                   category === c ? "bg-accent-2/15 text-accent-2" : "text-muted hover:bg-white/5 hover:text-foreground",
                 )}
               >
-                {c === "ALL" ? "All" : CATEGORY_LABEL[c]}
+                {c === "ALL" ? t("trading.category.ALL") : t(CATEGORY_LABEL[c])}
               </button>
             ))}
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-1">
           {filtered.length === 0 ? (
-            <div className="p-3 text-center text-xs text-muted">No instruments match.</div>
+            <div className="p-3 text-center text-xs text-muted">{t("trading.instruments.noMatch")}</div>
           ) : (
             filtered.map((i) => (
               <Row key={i.symbol} instrument={i} tick={lastTick.get(i.symbol)} selected={i.symbol === selected} stale={isStale(i.symbol)} onSelect={onSelect} />

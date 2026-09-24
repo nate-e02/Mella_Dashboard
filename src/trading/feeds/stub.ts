@@ -57,21 +57,23 @@ export function stubProfile(symbol: string, price: number): { spread: number; vo
 }
 
 export class StubProvider implements MarketDataProvider {
-  readonly name = "STUB";
+  /** "STUB" by default; a second instance ("STUB2", different seed) stands in for a backup feed in development. */
+  readonly name: string;
   private listeners: ((t: Tick) => void)[] = [];
   private state = new Map<string, SymbolState>();
   private rng: () => number;
   private running = false;
 
   constructor(
-    private readonly opts: { seed?: number; minTicksPerSec?: number; maxTicksPerSec?: number; log?: FeedLogger } = {},
+    private readonly opts: { seed?: number; minTicksPerSec?: number; maxTicksPerSec?: number; log?: FeedLogger; name?: string } = {},
   ) {
+    this.name = opts.name ?? "STUB";
     this.rng = mulberry32(opts.seed ?? 20260923);
   }
 
   async start(symbols: FeedSymbol[]): Promise<void> {
     const log = this.opts.log ?? silentLogger;
-    log.warn({ symbols: symbols.map((s) => s.symbol) }, "STUB FEED: prices are SIMULATED random-walk data, not real market prices");
+    log.warn({ source: this.name, symbols: symbols.map((s) => s.symbol) }, "STUB FEED: prices are SIMULATED random-walk data, not real market prices");
     this.running = true;
     for (const sym of symbols) {
       const base = START_PRICES[sym.symbol] ?? 1;

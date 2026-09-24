@@ -5,7 +5,10 @@ import { evaluateAccount, failAccountForBreach } from "@/lib/services/challengeE
 import { dailyLossFloor, maxDrawdownFloor } from "@/lib/services/challengeRules";
 import { currentDayStart, needsDailyReset, nextDayStart, parseResetTime, type ResetTime } from "@/lib/services/dailyReset";
 import { countTradingDays } from "@/lib/services/accountMetrics";
-import { alertOps } from "@/lib/services/notifications";
+import { alertOps, notifyUser } from "@/lib/services/notifications";
+import { interpolate } from "@/i18n/format";
+import { dictionaries, type MessageKey } from "@/i18n/messages";
+import { isLocale } from "@/i18n/config";
 import {
   captureDailyAnchor,
   loadEnabledInstruments,
@@ -19,9 +22,11 @@ import {
   updatePositionRisk,
 } from "@/lib/services/tradeLedger";
 import type { TemplateSnapshot } from "@/types";
-import { FEED_STALE_MS, type AccountState, type ClientMessage, type OrderKind, type PositionInfo, type ServerMessage, type Side, type Tick } from "@/trading/protocol";
+import { FEED_STALE_MS, type AccountState, type ClientMessage, type MarketNews, type OrderKind, type PositionInfo, type ServerMessage, type Side, type Tick } from "@/trading/protocol";
 import type { MarketStatusEvent, TradingBus } from "./bus";
 import { Converter, NoFxPathError } from "./fx";
+import { DEFAULT_NEWS_WINDOW_MINUTES, NEWS_WINDOW_SETTING, activeNewsWindow, normalizeNewsWindowMinutes, type NewsEvent } from "./news";
+import { dailyRollover, dailyRolloverCutoff, isRolloverWindow, isWeekendRestricted, weekendCutoff, weekendReopen } from "./sessions";
 import {
   applyMarkup,
   checkStops,
@@ -51,6 +56,13 @@ import {
  * Money: floating P&L is recomputed from the entry price on every tick
  * (never accumulated), converted to the account currency (ETB) via fx.ts and
  * rounded with roundCurrency at every persistence boundary.
+ *
+ * Challenge holding rules (per account snapshot): no weekend holding
+ * flattens FX/metal/index positions at Friday 16:45 New York and refuses new
+ * ones until the Sunday open; no overnight holding flattens them at 16:55 New
+ * York each weekday; no news trading refuses new exposure (and holds pending
+ * orders) around HIGH-impact events in the instrument's currencies. Crypto is
+ * exempt from the session rules. Closing and SL/TP are never blocked.
  */
 
 export type EngineLogger = {
@@ -121,7 +133,14 @@ export type EngineAccount = {
   lastSnapshotEquity: number;
   lastSnapshotAt: number;
   emitTimer: NodeJS.Timeout | null;
+  /** Cutoff (epoch ms) each holding rule last flattened this account for: at most one sweep per cutoff. */
+  ruleSweeps: Partial<Record<HoldingRule, number>>;
+  /** After a failed rule sweep, when to try again. */
+  ruleRetryAt: number;
 };
+
+type HoldingRule = "WEEKEND" | "OVERNIGHT";
+type CloseReason = "MANUAL" | "STOP_LOSS" | "TAKE_PROFIT" | "BREACH" | "ADMIN" | "WEEKEND" | "OVERNIGHT" | "NEWS";
 
 type Ctx = { userId: string; role: string };
 
@@ -136,6 +155,13 @@ const RECONCILE_MS = 5_000;
 const RELOAD_MS = 30_000;
 const INSTRUMENTS_MS = 60_000;
 const LAG_SAMPLES = 256;
+const NEWS_MS = 60_000;
+/** Events kept in memory: from 2 h ago (covers any window) to a week ahead. */
+const NEWS_LOOKBACK_MS = 2 * 3_600_000;
+const NEWS_LOOKAHEAD_MS = 7 * 86_400_000;
+/** Events pushed to terminals on market.status. */
+const NEWS_PUSH_HORIZON_MS = 24 * 3_600_000;
+const RULE_RETRY_MS = 60_000;
 
 export class RejectError extends Error {
   constructor(
@@ -173,6 +199,9 @@ export class Engine {
   private lag: number[] = [];
   private lastSweep: unknown = null;
   private started = false;
+  private newsEvents: NewsEvent[] = [];
+  private newsWindowMs = DEFAULT_NEWS_WINDOW_MINUTES * 60_000;
+  private newsKey = "";
   private readonly now: () => number;
   private readonly bus: TradingBus;
   private readonly fx: Converter;
@@ -193,6 +222,7 @@ export class Engine {
     await this.reloadInstruments();
     this.manualHalt = await readKillSwitch();
     if (this.manualHalt) this.manualHaltReason = "manual kill switch (SystemSetting trading.halted)";
+    await this.reloadNewsEvents().catch((err) => this.log.error({ err: msg(err) }, "engine: news calendar load failed"));
     if (this.opts.loadAccountsOnStart !== false) {
       const rows = await loadEngineAccounts();
       for (const row of rows) await this.trackFromRow(row);
@@ -208,6 +238,7 @@ export class Engine {
     this.timers.push(setInterval(() => void this.reconcile().catch((err) => this.log.error({ err: msg(err) }, "engine: reconcile failed")), RECONCILE_MS));
     this.timers.push(setInterval(() => void this.reloadAllAccounts().catch((err) => this.log.error({ err: msg(err) }, "engine: reload failed")), RELOAD_MS));
     this.timers.push(setInterval(() => void this.reloadInstruments().catch((err) => this.log.error({ err: msg(err) }, "engine: instrument reload failed")), INSTRUMENTS_MS));
+    this.timers.push(setInterval(() => void this.reloadNewsEvents().catch((err) => this.log.error({ err: msg(err) }, "engine: news calendar reload failed")), NEWS_MS));
   }
 
   async stop(): Promise<void> {
@@ -236,6 +267,23 @@ export class Engine {
       seen.add(r.symbol);
     }
     for (const s of Array.from(this.instruments.keys())) if (!seen.has(s)) this.instruments.delete(s);
+  }
+
+  /** Reloads upcoming HIGH-impact events and the ± window (SystemSetting rules.newsWindowMinutes). */
+  async reloadNewsEvents(): Promise<void> {
+    const now = this.now();
+    const [rows, setting] = await Promise.all([
+      prisma.economicEvent.findMany({
+        where: { impact: "HIGH", scheduledAt: { gte: new Date(now - NEWS_LOOKBACK_MS), lte: new Date(now + NEWS_LOOKAHEAD_MS) } },
+        orderBy: { scheduledAt: "asc" },
+        take: 1_000,
+        select: { id: true, title: true, currency: true, scheduledAt: true },
+      }),
+      prisma.systemSetting.findUnique({ where: { key: NEWS_WINDOW_SETTING } }),
+    ]);
+    this.newsEvents = rows.map((r) => ({ id: r.id, title: r.title, currency: r.currency.toUpperCase(), scheduledAt: r.scheduledAt.getTime() }));
+    this.newsWindowMs = normalizeNewsWindowMinutes(setting?.value) * 60_000;
+    if (this.started) this.updateMarketState();
   }
 
   /** Loads (or refreshes) one account from the DB; returns null if it is not tradable. */
@@ -288,6 +336,8 @@ export class Engine {
       lastSnapshotEquity: row.equity,
       lastSnapshotAt: this.now(),
       emitTimer: null,
+      ruleSweeps: {},
+      ruleRetryAt: 0,
     };
     for (const p of row.positions) this.addPosition(acct, p);
     const pendingRows = await prisma.order.findMany({ where: { accountId: row.id, status: "PENDING", type: { in: ["LIMIT", "STOP"] } } });
@@ -486,6 +536,9 @@ export class Engine {
         const acct = this.accounts.get(order.accountId);
         if (!acct || order.triggering || acct.breaching) continue;
         if (pendingTriggered(order.side, order.type, order.price, quote)) {
+          // A rule window (news, weekend, rollover) keeps the order pending instead of opening exposure.
+          const inst = this.instruments.get(order.symbol);
+          if (inst && this.ruleRestriction(acct, inst, receivedAt)) continue;
           order.triggering = true;
           void this.enqueue(acct.id, () => this.triggerPending(acct, order, quote)).catch((err) =>
             this.log.error({ err: msg(err), orderId: order.id }, "engine: pending trigger failed"),
@@ -623,6 +676,112 @@ export class Engine {
         }).catch((err) => this.log.error({ err: msg(err), accountId: acct.id }, "engine: daily anchor failed"));
       }
     }
+    this.enforceHoldingRules(now);
+  }
+
+  /** The 1 s timer body: market state, daily anchors, holding rules (tests call it with a fake clock). */
+  runSecondTick(): void {
+    this.secondTick();
+  }
+
+  // ---------------------------------------------------------------------
+  // challenge holding / news rules
+  // ---------------------------------------------------------------------
+
+  /**
+   * Why this account may not open new exposure on `inst` right now, or null.
+   * Applies to new orders and to triggering pending orders; never to closes.
+   */
+  private ruleRestriction(acct: EngineAccount, inst: Instrument, now: number): { code: RejectCode; detail: string } | null {
+    const rules = acct.snapshot;
+    if (inst.category !== "CRYPTO") {
+      if (rules.weekendHoldingAllowed === false && isWeekendRestricted(now)) return { code: "WEEKEND_CLOSED", detail: `until ${weekendReopen(now).toISOString()}` };
+      if (rules.overnightHoldingAllowed === false && isRolloverWindow(now)) return { code: "OVERNIGHT_CLOSED", detail: `until ${dailyRollover(now).toISOString()}` };
+    }
+    if (rules.newsTradingAllowed === false) {
+      const w = activeNewsWindow(this.newsEvents, inst, now, this.newsWindowMs);
+      if (w) return { code: "NEWS_WINDOW", detail: `${w.event.currency} ${w.event.title} until ${new Date(w.end).toISOString()}` };
+    }
+    return null;
+  }
+
+  /**
+   * Schedules at most one flattening per account per cutoff while a holding
+   * window is open (Friday 16:45 .. Sunday 17:00 for weekend, 16:55 .. 17:00
+   * for overnight). The work itself runs on the account queue.
+   */
+  private enforceHoldingRules(now: number) {
+    const weekend = isWeekendRestricted(now);
+    const rollover = isRolloverWindow(now);
+    if (!weekend && !rollover) return;
+    const weekendKey = weekend ? weekendCutoff(now).getTime() : 0;
+    const rolloverKey = rollover ? dailyRolloverCutoff(now).getTime() : 0;
+    for (const acct of this.accounts.values()) {
+      if (acct.breaching || acct.untracked || now < acct.ruleRetryAt) continue;
+      let rule: HoldingRule | null = null;
+      let key = 0;
+      if (weekend && acct.snapshot.weekendHoldingAllowed === false) {
+        rule = "WEEKEND";
+        key = weekendKey;
+      } else if (rollover && acct.snapshot.overnightHoldingAllowed === false) {
+        rule = "OVERNIGHT";
+        key = rolloverKey;
+      }
+      if (!rule || acct.ruleSweeps[rule] === key) continue;
+      acct.ruleSweeps[rule] = key;
+      const which = rule;
+      void this.enqueue(acct.id, () => this.flattenForRule(acct, which)).catch((err) =>
+        this.log.error({ err: msg(err), accountId: acct.id, rule: which }, "engine: holding-rule sweep failed"),
+      );
+    }
+  }
+
+  /** Closes the account's non-crypto positions (and, for the weekend, cancels its non-crypto pending orders). */
+  private async flattenForRule(acct: EngineAccount, rule: HoldingRule) {
+    if (acct.untracked || acct.breaching) return;
+    const closed: { symbol: string; netProfit: number | null }[] = [];
+    let failures = 0;
+    for (const pos of Array.from(acct.positions.values())) {
+      if (acct.untracked) break; // a close passed/failed the account
+      const inst = this.instruments.get(pos.symbol);
+      if (!inst || inst.category === "CRYPTO" || pos.closing) continue;
+      // Live price when there is one; otherwise the last persisted mark (e.g. a restart after the feed closed for the weekend).
+      const q = this.quotes.get(pos.symbol);
+      const price = q ? markPrice(pos.side, q) : pos.currentPrice;
+      if (price == null) {
+        failures += 1;
+        this.log.error({ positionId: pos.id, rule }, "engine: no price to close position for holding rule");
+        continue;
+      }
+      pos.closing = true;
+      try {
+        const netProfit = await this.closePositionInternal(acct, pos, price, rule, undefined, null, q);
+        closed.push({ symbol: pos.symbol, netProfit });
+      } catch (err) {
+        failures += 1;
+        pos.closing = false;
+        this.log.error({ err: msg(err), positionId: pos.id, rule }, "engine: holding-rule close failed");
+      }
+    }
+    let cancelled = 0;
+    if (rule === "WEEKEND" && !acct.untracked) {
+      cancelled = await this.cancelPendingOrders(acct, "WEEKEND_CLOSED", (o) => this.instruments.get(o.symbol)?.category !== "CRYPTO");
+    }
+    if (failures > 0) {
+      // Allow another attempt for this cutoff shortly.
+      delete acct.ruleSweeps[rule];
+      acct.ruleRetryAt = this.now() + RULE_RETRY_MS;
+      void alertOps(`MellaFx: ${rule.toLowerCase()} rule could not close ${failures} position(s) on account ${acct.id} - retrying in ${RULE_RETRY_MS / 1000}s`);
+    }
+    if (closed.length === 0 && cancelled === 0) return;
+    this.log.info({ accountId: acct.id, rule, closed: closed.length, cancelled }, "engine: holding rule applied");
+    await notifyRuleApplied(acct, rule, closed.length, cancelled).catch((err) => this.log.error({ err: msg(err), accountId: acct.id }, "engine: rule notification failed"));
+  }
+
+  /** Upcoming HIGH-impact events for terminals (the 24 h ahead plus any window still open). */
+  private marketNews(now: number): MarketNews {
+    const events = this.newsEvents.filter((e) => e.scheduledAt + this.newsWindowMs >= now && e.scheduledAt <= now + NEWS_PUSH_HORIZON_MS);
+    return { windowMinutes: this.newsWindowMs / 60_000, events };
   }
 
   private updateMarketState(force = false) {
@@ -647,10 +806,16 @@ export class Engine {
       reason = this.lastTickAt == null ? "no market data received yet" : `no market data for ${Math.round((now - this.lastTickAt) / 1000)}s`;
     }
     const staleChanged = stale.size !== this.staleSymbols.size || Array.from(stale).some((s) => !this.staleSymbols.has(s));
+    const news = this.marketNews(now);
+    const newsKey = `${news.windowMinutes}|${news.events.map((e) => `${e.id}@${e.scheduledAt}`).join(",")}`;
+    const newsChanged = newsKey !== this.newsKey;
+    this.newsKey = newsKey;
     const changed = force || state !== this.marketState.state || reason !== this.marketState.reason || staleChanged;
     this.staleSymbols = stale;
-    this.marketState = { state, reason, symbols };
-    if (changed) {
+    this.marketState = { state, reason, symbols, news };
+    if (!changed && newsChanged) {
+      this.bus.emit("market.status", this.marketState);
+    } else if (changed) {
       if (state !== "OPEN" || force) this.log.warn({ state, reason, stale: Array.from(stale) }, "engine: market status");
       else this.log.info({ state, stale: Array.from(stale) }, "engine: market status");
       this.bus.emit("market.status", this.marketState);
@@ -750,6 +915,8 @@ export class Engine {
       const inst = this.instruments.get(m.symbol);
       // Order.symbol references Instrument, so an unknown symbol cannot be recorded as a rejected order.
       if (!inst || !inst.enabled) return reject("UNKNOWN_SYMBOL", undefined, false);
+      const restriction = this.ruleRestriction(acct, inst, this.now());
+      if (restriction) return reject(restriction.code, restriction.detail);
       const q = this.freshQuote(m.symbol);
       if (!q) return reject("MARKET_HALTED", this.marketState.reason ?? `${m.symbol} has no fresh price`);
       // Validate the volume exactly as requested (never round 0.015 up to a valid 0.02), then normalise.
@@ -921,13 +1088,13 @@ export class Engine {
     acct: EngineAccount,
     pos: EnginePosition,
     price: number,
-    reason: "MANUAL" | "STOP_LOSS" | "TAKE_PROFIT" | "BREACH" | "ADMIN",
+    reason: CloseReason,
     volume: number | undefined,
     actorId: string | null,
     q: EngineQuote | undefined,
     keepTrackedOnFail = false,
-  ) {
-    if (!acct.positions.has(pos.id)) return;
+  ): Promise<number | null> {
+    if (!acct.positions.has(pos.id)) return null;
     const inst = this.instruments.get(pos.symbol);
     if (!inst) throw new Error(`instrument ${pos.symbol} not loaded`);
     const closeVolume = volume ?? pos.volume;
@@ -969,9 +1136,10 @@ export class Engine {
       await this.cancelPendingOrders(acct, `ACCOUNT_${res.account.status}`);
       this.emitAccount(acct, true);
       this.untrack(acct.id, `status ${res.account.status} after close`);
-      return;
+      return res.trade?.netProfit ?? null;
     }
     this.emitAccount(acct, true);
+    return res.trade?.netProfit ?? null;
   }
 
   private applyAccountRow(acct: EngineAccount, row: { status: string; balance: number; realizedPnl: number; highWaterMark: number; dailyAnchorBalance: number; dailyAnchorDate: Date; marginUsed: number }) {
@@ -1008,18 +1176,20 @@ export class Engine {
     }
   }
 
-  private async cancelPendingOrders(acct: EngineAccount, reason: string) {
-    if (acct.pending.size === 0) return;
-    const ids = Array.from(acct.pending.keys());
+  /** Cancels the account's pending orders (those matching `filter`, default all); returns how many. */
+  private async cancelPendingOrders(acct: EngineAccount, reason: string, filter: (o: EnginePending) => boolean = () => true): Promise<number> {
+    const orders = Array.from(acct.pending.values()).filter(filter);
+    if (orders.length === 0) return 0;
     try {
-      await prisma.order.updateMany({ where: { id: { in: ids }, status: "PENDING" }, data: { status: "CANCELLED", rejectReason: reason.slice(0, 200) } });
+      await prisma.order.updateMany({ where: { id: { in: orders.map((o) => o.id) }, status: "PENDING" }, data: { status: "CANCELLED", rejectReason: reason.slice(0, 200) } });
     } catch (err) {
       this.log.error({ err: msg(err), accountId: acct.id }, "engine: cancelling pending orders failed");
     }
-    for (const o of Array.from(acct.pending.values())) {
+    for (const o of orders) {
       this.removePending(acct, o);
       this.bus.emit("order.result", { accountId: acct.id, clientOrderId: o.clientOrderId, status: "REJECTED", orderId: o.id, reason });
     }
+    return orders.length;
   }
 
   private async closeAllAndUntrack(acct: EngineAccount, reason: "ADMIN", why: string) {
@@ -1226,6 +1396,7 @@ export class Engine {
       fx: this.fx.usdRate(),
       lastSweep: this.lastSweep,
       started: this.started,
+      news: { windowMinutes: this.newsWindowMs / 60_000, upcomingHighImpact: this.newsEvents.filter((e) => e.scheduledAt + this.newsWindowMs >= this.now()).length },
     };
   }
 
@@ -1237,6 +1408,23 @@ export class Engine {
 
 function msg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** In-app (and Telegram) notice that a holding rule flattened the account, in the trader's language. */
+async function notifyRuleApplied(acct: EngineAccount, rule: HoldingRule, closed: number, cancelled: number) {
+  const user = await prisma.user.findUnique({ where: { id: acct.userId }, select: { locale: true } });
+  const messages = dictionaries[isLocale(user?.locale) ? user!.locale : "en"];
+  const t = (key: MessageKey, vars?: Record<string, string | number>) => interpolate(messages[key] ?? key, vars);
+  const name = acct.snapshot.name ?? acct.id;
+  const parts = [t(rule === "WEEKEND" ? "trading.notify.weekend.message" : "trading.notify.overnight.message", { account: name, count: closed })];
+  if (cancelled > 0) parts.push(t("trading.notify.ordersCancelled", { count: cancelled }));
+  await notifyUser({
+    userId: acct.userId,
+    title: t(rule === "WEEKEND" ? "trading.notify.weekend.title" : "trading.notify.overnight.title"),
+    message: parts.join(" "),
+    type: "warning",
+    link: `/accounts/${acct.id}`,
+  });
 }
 
 function isUniqueViolation(err: unknown): boolean {

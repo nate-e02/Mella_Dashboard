@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { DataTable, type Column } from "@/components/ui/DataTable";
 import { Pagination } from "@/components/ui/Pagination";
-import { StatusBadge } from "@/components/ui/Badge";
+import { StatusBadge, useStatusLabel } from "@/components/ui/Badge";
 import { formatDateTime, formatSigned } from "@/lib/format";
+import { useT } from "@/i18n/client";
 
 type AccountOption = { id: string; template: { id: string; name: string } | null; status: string };
 type Trade = {
@@ -20,17 +21,11 @@ type Trade = {
   closeTime: string | null;
 };
 
-const TIMEFRAMES = [
-  { label: "This Month", value: "this_month" },
-  { label: "Last Month", value: "last_month" },
-  { label: "3 Months", value: "3_months" },
-  { label: "6 Months", value: "6_months" },
-  { label: "This Year", value: "this_year" },
-  { label: "All Time", value: "all_time" },
-  { label: "Custom Range", value: "custom" },
-];
+const TIMEFRAMES = ["this_month", "last_month", "3_months", "6_months", "this_year", "all_time", "custom"] as const;
 
 export function HistoryExplorer() {
+  const t = useT();
+  const statusLabel = useStatusLabel();
   const [accounts, setAccounts] = useState<AccountOption[]>([]);
   const [accountId, setAccountId] = useState("");
   const [timeframe, setTimeframe] = useState("this_month");
@@ -39,7 +34,7 @@ export function HistoryExplorer() {
   const [page, setPage] = useState(1);
   const [data, setData] = useState<{ items: Trade[]; total: number; page: number; totalPages: number }>({ items: [], total: 0, page: 1, totalPages: 1 });
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     fetch("/api/trader/accounts")
@@ -59,7 +54,7 @@ export function HistoryExplorer() {
     // synchronizes with that external system.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    setError(null);
+    setLoadFailed(false);
     const params = new URLSearchParams({ timeframe, page: String(page) });
     if (timeframe === "custom") {
       if (from) params.set("from", from);
@@ -67,11 +62,11 @@ export function HistoryExplorer() {
     }
     fetch(`/api/trader/accounts/${accountId}/trades?${params.toString()}`)
       .then((r) => {
-        if (!r.ok) throw new Error("Failed to load trade history");
+        if (!r.ok) throw new Error("load_failed");
         return r.json();
       })
       .then(setData)
-      .catch((err) => setError(err.message))
+      .catch(() => setLoadFailed(true))
       .finally(() => setLoading(false));
   }, [accountId, timeframe, from, to, page]);
 
@@ -82,22 +77,27 @@ export function HistoryExplorer() {
      
   }, [accountId, timeframe, from, to]);
 
+  const sideLabel = (side: string) => (side === "BUY" ? t("common.side.BUY") : side === "SELL" ? t("common.side.SELL") : side);
   const columns: Column<Trade>[] = [
-    { key: "symbol", header: "Symbol", render: (t) => <span className="font-medium">{t.symbol}</span> },
-    { key: "side", header: "Direction", render: (t) => t.side },
-    { key: "entry", header: "Entry", render: (t) => t.entryPrice },
-    { key: "exit", header: "Exit", render: (t) => t.exitPrice ?? "—" },
-    { key: "volume", header: "Volume", render: (t) => t.volume },
-    { key: "pnl", header: "Profit/Loss", render: (t) => <span className={t.netProfit >= 0 ? "text-success" : "text-danger"}>{formatSigned(t.netProfit, "ETB")}</span> },
-    { key: "status", header: "Status", render: (t) => <StatusBadge status={t.status} /> },
-    { key: "opened", header: "Date", render: (t) => formatDateTime(t.openTime) },
+    { key: "symbol", header: t("app.history.col.symbol"), render: (tr) => <span className="font-medium">{tr.symbol}</span> },
+    { key: "side", header: t("app.history.col.side"), render: (tr) => sideLabel(tr.side) },
+    { key: "entry", header: t("app.history.col.entry"), render: (tr) => tr.entryPrice },
+    { key: "exit", header: t("app.history.col.exit"), render: (tr) => tr.exitPrice ?? "—" },
+    { key: "volume", header: t("app.history.col.volume"), render: (tr) => tr.volume },
+    {
+      key: "pnl",
+      header: t("app.history.col.pnl"),
+      render: (tr) => <span className={tr.netProfit >= 0 ? "text-success" : "text-danger"}>{formatSigned(tr.netProfit, "ETB")}</span>,
+    },
+    { key: "status", header: t("app.history.col.status"), render: (tr) => <StatusBadge status={tr.status} /> },
+    { key: "opened", header: t("app.history.col.date"), render: (tr) => formatDateTime(tr.openTime) },
   ];
 
   if (!loading && accounts.length === 0) {
     return (
       <div className="card p-10 text-center">
-        <div className="text-sm font-medium">No accounts yet.</div>
-        <div className="mt-1 text-xs text-muted">Purchase a challenge to start building trade history.</div>
+        <div className="text-sm font-medium">{t("app.history.noAccounts")}</div>
+        <div className="mt-1 text-xs text-muted">{t("app.history.noAccountsHint")}</div>
       </div>
     );
   }
@@ -105,30 +105,38 @@ export function HistoryExplorer() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <select className="input-base sm:max-w-xs" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+        <select aria-label={t("app.history.account")} className="input-base sm:max-w-xs" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
           {accounts.map((a) => (
             <option key={a.id} value={a.id}>
-              {a.template?.name ?? a.id} — {a.status}
+              {a.template?.name ?? a.id} — {statusLabel(a.status)}
             </option>
           ))}
         </select>
-        <select className="input-base sm:max-w-[180px]" value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
-          {TIMEFRAMES.map((t) => (
-            <option key={t.value} value={t.value}>
-              {t.label}
+        <select aria-label={t("app.history.timeframe")} className="input-base sm:max-w-[180px]" value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
+          {TIMEFRAMES.map((tf) => (
+            <option key={tf} value={tf}>
+              {t(`app.history.tf.${tf}`)}
             </option>
           ))}
         </select>
         {timeframe === "custom" && (
           <>
-            <input type="date" className="input-base sm:max-w-[160px]" value={from} onChange={(e) => setFrom(e.target.value)} />
-            <input type="date" className="input-base sm:max-w-[160px]" value={to} onChange={(e) => setTo(e.target.value)} />
+            <input type="date" aria-label={t("app.history.from")} className="input-base sm:max-w-[160px]" value={from} onChange={(e) => setFrom(e.target.value)} />
+            <input type="date" aria-label={t("app.history.to")} className="input-base sm:max-w-[160px]" value={to} onChange={(e) => setTo(e.target.value)} />
           </>
         )}
       </div>
 
       <div className="card !p-0 overflow-hidden">
-        <DataTable columns={columns} rows={data.items} loading={loading} error={error} rowKey={(t) => t.id} emptyTitle="No trades for this account" emptyDescription="No trades were recorded in the selected timeframe." />
+        <DataTable
+          columns={columns}
+          rows={data.items}
+          loading={loading}
+          error={loadFailed ? t("app.history.loadFailed") : null}
+          rowKey={(tr) => tr.id}
+          emptyTitle={t("app.history.emptyTitle")}
+          emptyDescription={t("app.history.emptyDescription")}
+        />
         <Pagination page={data.page} totalPages={data.totalPages} onChange={setPage} />
       </div>
     </div>

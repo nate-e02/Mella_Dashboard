@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import { useToast } from "@/components/ui/Toast";
+import { useT } from "@/i18n/client";
 
 export function ChangePasswordForm() {
+  const t = useT();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [saving, setSaving] = useState(false);
@@ -22,14 +24,14 @@ export function ChangePasswordForm() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError(body.error || body.issues?.[0]?.message || "Failed to change password");
+        setError(body.error || body.issues?.[0]?.message || t("auth.changePassword.failed"));
         return;
       }
-      toast.push("Password changed successfully", "success");
+      toast.push(t("auth.changePassword.done"), "success");
       setCurrentPassword("");
       setNewPassword("");
     } catch {
-      setError("Unexpected error, please try again");
+      setError(t("common.unexpectedError"));
     } finally {
       setSaving(false);
     }
@@ -37,19 +39,19 @@ export function ChangePasswordForm() {
 
   return (
     <form onSubmit={submit} className="card flex max-w-md flex-col gap-3 p-5">
-      <h3 className="text-sm font-semibold">Change Password</h3>
+      <h3 className="text-sm font-semibold">{t("auth.changePassword.title")}</h3>
       {error && <div className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>}
       <label className="flex flex-col gap-1 text-sm">
-        <span className="font-medium">Current Password</span>
-        <input type="password" className="input-base" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required />
+        <span className="font-medium">{t("auth.changePassword.current")}</span>
+        <input type="password" autoComplete="current-password" className="input-base" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required />
       </label>
       <label className="flex flex-col gap-1 text-sm">
-        <span className="font-medium">New Password</span>
-        <input type="password" className="input-base" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={12} maxLength={72} />
-        <span className="text-xs text-muted">At least 12 characters. Other sessions are signed out after a change.</span>
+        <span className="font-medium">{t("auth.changePassword.new")}</span>
+        <input type="password" autoComplete="new-password" className="input-base" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={12} maxLength={72} />
+        <span className="text-xs text-muted">{t("auth.changePassword.hint")}</span>
       </label>
       <button type="submit" className="btn-primary self-start" disabled={saving}>
-        {saving ? "Saving..." : "Update Password"}
+        {saving ? t("common.saving") : t("auth.changePassword.submit")}
       </button>
     </form>
   );

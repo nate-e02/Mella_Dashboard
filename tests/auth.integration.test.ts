@@ -106,7 +106,7 @@ describe("password reset and change", () => {
     expect(await resetPassword(raw, "another-password-987")).toBe(false); // consumed
 
     const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(await verifyPassword("brand-new-password-987", updated.passwordHash)).toBe(true);
+    expect(await verifyPassword("brand-new-password-987", updated.passwordHash!)).toBe(true);
     const live = await prisma.session.count({ where: { userId: user.id, revokedAt: null } });
     expect(live).toBe(0);
   });

@@ -1,6 +1,7 @@
 "use client";
 
 import { clsx } from "clsx";
+import { useT } from "@/i18n/client";
 
 export type Column<T> = {
   header: string;
@@ -14,8 +15,8 @@ export function DataTable<T>({
   rows,
   loading,
   error,
-  emptyTitle = "No records found",
-  emptyDescription = "Try adjusting your search or filters.",
+  emptyTitle,
+  emptyDescription,
   rowKey,
 }: {
   columns: Column<T>[];
@@ -26,6 +27,7 @@ export function DataTable<T>({
   emptyDescription?: string;
   rowKey: (row: T) => string;
 }) {
+  const t = useT();
   return (
     <div className="overflow-x-auto rounded-xl border border-border">
       <table className="w-full min-w-[720px] border-collapse text-sm">
@@ -61,8 +63,8 @@ export function DataTable<T>({
           {!loading && !error && rows.length === 0 && (
             <tr>
               <td colSpan={columns.length} className="px-4 py-14 text-center">
-                <div className="text-sm font-medium text-foreground">{emptyTitle}</div>
-                <div className="mt-1 text-xs text-muted">{emptyDescription}</div>
+                <div className="text-sm font-medium text-foreground">{emptyTitle ?? t("common.table.emptyTitle")}</div>
+                <div className="mt-1 text-xs text-muted">{emptyDescription ?? t("common.table.emptyDescription")}</div>
               </td>
             </tr>
           )}

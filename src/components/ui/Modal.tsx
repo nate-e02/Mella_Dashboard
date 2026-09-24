@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
+import { useT } from "@/i18n/client";
 
 const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
 
@@ -18,6 +19,7 @@ export function Modal({
   children: React.ReactNode;
   widthClass?: string;
 }) {
+  const t = useT();
   const panelRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
 
@@ -63,7 +65,7 @@ export function Modal({
           <h2 id={titleId} className="text-lg font-semibold text-foreground">
             {title}
           </h2>
-          <button onClick={onClose} className="btn-ghost !px-2 !py-1 text-lg leading-none" aria-label="Close dialog">
+          <button onClick={onClose} className="btn-ghost !px-2 !py-1 text-lg leading-none" aria-label={t("common.dialog.close")}>
             ×
           </button>
         </div>
@@ -78,7 +80,7 @@ export function ConfirmDialog({
   open,
   title,
   description,
-  confirmLabel = "Confirm",
+  confirmLabel,
   danger,
   loading,
   onConfirm,
@@ -95,16 +97,17 @@ export function ConfirmDialog({
   onCancel: () => void;
   children?: React.ReactNode;
 }) {
+  const t = useT();
   return (
     <Modal open={open} onClose={onCancel} title={title} widthClass="max-w-md">
       <p className="text-sm text-muted">{description}</p>
       {children}
       <div className="mt-6 flex justify-end gap-2">
         <button className="btn-secondary" onClick={onCancel} disabled={loading}>
-          Cancel
+          {t("common.cancel")}
         </button>
         <button className={danger ? "btn-danger" : "btn-primary"} onClick={onConfirm} disabled={loading}>
-          {loading ? "Please wait..." : confirmLabel}
+          {loading ? t("common.pleaseWait") : (confirmLabel ?? t("common.confirm"))}
         </button>
       </div>
     </Modal>

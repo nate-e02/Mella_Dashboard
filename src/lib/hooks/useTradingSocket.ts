@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { ClientMessage, MarketState, ServerMessage, Tick } from "@/trading/protocol";
+import type { ClientMessage, MarketNews, MarketState, ServerMessage, Tick } from "@/trading/protocol";
 
 /**
  * One WebSocket per page to the trading worker.
@@ -23,6 +23,8 @@ export type MarketStatus = {
   state: MarketState;
   reason?: string;
   symbols?: Record<string, { lastTickAt: number | null; stale: boolean }>;
+  /** Upcoming high-impact news and the ± window (restricts accounts without news trading). */
+  news?: MarketNews;
   receivedAt: number;
 };
 
@@ -299,7 +301,7 @@ export function useTradingSocket(options: { enabled?: boolean } = {}): TradingSo
           break;
         }
         case "market.status": {
-          setMarketState({ state: msg.state, reason: msg.reason, symbols: msg.symbols, receivedAt: Date.now() });
+          setMarketState({ state: msg.state, reason: msg.reason, symbols: msg.symbols, news: msg.news, receivedAt: Date.now() });
           break;
         }
         default:

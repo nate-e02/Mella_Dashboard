@@ -91,6 +91,30 @@ services:
       redis:
         condition: service_healthy
 
+  # Nightly pg_dump at 00:30 EAT (21:30 UTC) into the mellafx_backups volume,
+  # 30-day retention (scripts/db-backup.sh). Ship that volume to a second
+  # in-country facility; restore with scripts/db-restore.sh.
+  backup:
+    profiles: ["app"]
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      PGURL: postgresql://${POSTGRES_USER:-mellafx}:${POSTGRES_PASSWORD:-mellafx_dev_password}@db:5432/${POSTGRES_DB:-mellafx}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - ./scripts/db-backup.sh:/usr/local/bin/db-backup.sh:ro
+      - mellafx_backups:/backups
+    # busybox crond does not pass the container environment to jobs, so bake it into the crontab line.
+    command:
+      - sh
+      - -c
+      - >-
+        echo "30 21 * * * DATABASE_URL=$$PGURL BACKUP_DIR=/backups BACKUP_RETENTION_DAYS=$$BACKUP_RETENTION_DAYS sh /usr/local/bin/db-backup.sh > /proc/1/fd/1 2>&1" | crontab - && exec crond -f -l 8
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   mellafx_pgdata:
   mellafx_redis:
+  mellafx_backups:

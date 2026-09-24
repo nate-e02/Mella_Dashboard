@@ -63,12 +63,35 @@ export async function rateLimit(key: string, limit: number, windowSec: number): 
   return { allowed: entry.count <= limit, remaining: Math.max(0, limit - entry.count), retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)) };
 }
 
-/** Best-effort client IP behind Cloudflare / a reverse proxy. */
-export function clientIpFromHeaders(headers: { get(name: string): string | null }): string {
-  return (
-    headers.get("cf-connecting-ip") ||
-    headers.get("x-real-ip") ||
-    headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    "unknown"
-  );
+/**
+ * Client IP for rate limiting and audit, read ONLY from the header our own
+ * edge sets. Any header a client can send itself (a stray `cf-connecting-ip`
+ * without Cloudflare in front, the left-most `X-Forwarded-For` entry) would
+ * let an attacker rotate "IPs" and bypass every limit. Next.js passes a
+ * client-supplied X-Forwarded-For through unchanged, so production must run
+ * behind a proxy that overwrites or appends it.
+ *
+ *   CLIENT_IP_HEADER=x-forwarded-for (default): the entry TRUSTED_PROXY_HOPS
+ *     (default 1) from the right, i.e. the address the nearest trusted proxy
+ *     saw (Traefik and Caddy replace untrusted incoming X-Forwarded-For).
+ *   CLIENT_IP_HEADER=cf-connecting-ip: behind Cloudflare, with the origin
+ *     firewalled to Cloudflare's IP ranges.
+ *   CLIENT_IP_HEADER=x-real-ip: behind nginx with `proxy_set_header X-Real-IP $remote_addr`.
+ */
+export function clientIpFromHeaders(headers: { get(name: string): string | null }, env: Record<string, string | undefined> = process.env): string {
+  const header = (env.CLIENT_IP_HEADER || "x-forwarded-for").trim().toLowerCase();
+  if (header === "x-forwarded-for") {
+    const hops = Math.max(1, Math.floor(Number(env.TRUSTED_PROXY_HOPS)) || 1);
+    const chain = (headers.get("x-forwarded-for") ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return chain[chain.length - hops] ?? chain[0] ?? "unknown";
+  }
+  return headers.get(header)?.trim() || "unknown";
+}
+
+/** For storage (sessions, audit rows): the "unknown" bucket name becomes null. */
+export function nullIfUnknown(ip: string): string | null {
+  return ip === "unknown" ? null : ip;
 }

@@ -186,7 +186,7 @@ jobs:
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
       - name: Build and push ${{ matrix.target }} image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           target: ${{ matrix.target }}

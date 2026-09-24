@@ -11,6 +11,11 @@ import { appUrl } from "@/env";
 import { AuthError, ConflictError } from "@/lib/auth/guards";
 
 const MAX_FAILED_LOGINS = 10;
+
+/** Account label shown in authenticator apps (and bound into the TOTP URI). */
+export function mfaLabel(user: Pick<User, "id" | "email" | "phone">): string {
+  return user.email ?? user.phone ?? user.id;
+}
 const LOCKOUT_MINUTES = 15;
 
 export type LoginOutcome =
@@ -39,7 +44,8 @@ export async function loginWithPassword(email: string, password: string): Promis
     return { outcome: "INVALID" };
   }
 
-  const valid = await verifyPassword(password, user.passwordHash);
+  // Phone-only accounts have no password: burn the same CPU and fail like a wrong password.
+  const valid = user.passwordHash ? await verifyPassword(password, user.passwordHash) : (await burnPasswordCheck(password), false);
   if (!valid) {
     const failed = user.failedLoginCount + 1;
     const lock = failed >= MAX_FAILED_LOGINS;
@@ -76,7 +82,7 @@ export async function completeMfaLogin(userId: string, code: string): Promise<Lo
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user || user.status !== "ACTIVE" || !user.mfaEnabled || !user.mfaSecretEnc) return { outcome: "INVALID" };
 
-  let ok = verifyTotp(user.mfaSecretEnc, code, user.email);
+  let ok = verifyTotp(user.mfaSecretEnc, code, mfaLabel(user));
   if (!ok) {
     const hashes = Array.isArray(user.mfaBackupCodes) ? (user.mfaBackupCodes as string[]) : [];
     const idx = await matchBackupCode(hashes, code);
@@ -125,7 +131,7 @@ export async function registerUser(input: { name: string; email: string; passwor
 
 export async function sendEmailVerification(userId: string): Promise<void> {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
-  if (user.emailVerifiedAt) return;
+  if (user.emailVerifiedAt || !user.email) return;
   const token = await createVerificationToken(user.id, "EMAIL_VERIFY", 24 * 60);
   await sendEmail({
     to: user.email,
@@ -148,7 +154,7 @@ export async function requestPasswordReset(email: string): Promise<void> {
   if (!user) return;
   const token = await createVerificationToken(user.id, "PASSWORD_RESET", 15);
   await sendEmail({
-    to: user.email,
+    to: email,
     subject: "Reset your MellaFx password",
     text: `Hi ${user.name},\n\nReset your password (link valid for 15 minutes):\n${appUrl()}/reset-password?token=${token}\n\nIf you did not request this, ignore this email.`,
   });
@@ -170,7 +176,7 @@ export async function resetPassword(token: string, newPassword: string): Promise
 
 export async function changePassword(userId: string, sessionId: string, currentPassword: string, newPassword: string): Promise<void> {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
-  const valid = await verifyPassword(currentPassword, user.passwordHash);
+  const valid = user.passwordHash ? await verifyPassword(currentPassword, user.passwordHash) : false;
   if (!valid) throw new AuthError("Current password is incorrect", 400);
   const passwordHash = await hashPassword(newPassword);
   await prisma.$transaction(async (tx) => {
@@ -188,7 +194,7 @@ export async function changePassword(userId: string, sessionId: string, currentP
 export async function beginMfaEnrolment(userId: string) {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
   if (user.mfaEnabled) throw new ConflictError("MFA is already enabled");
-  const enrolment = await generateMfaEnrolment(user.email);
+  const enrolment = await generateMfaEnrolment(mfaLabel(user));
   // Stored but not enabled until a code proves the authenticator was set up.
   await prisma.user.update({ where: { id: userId }, data: { mfaSecretEnc: enrolment.secretEnc } });
   return { otpauthUrl: enrolment.otpauthUrl, qrDataUrl: enrolment.qrDataUrl, secretBase32: enrolment.secretBase32 };
@@ -198,7 +204,7 @@ export async function confirmMfaEnrolment(userId: string, code: string): Promise
   const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
   if (user.mfaEnabled) throw new ConflictError("MFA is already enabled");
   if (!user.mfaSecretEnc) throw new ConflictError("Start MFA setup first");
-  if (!verifyTotp(user.mfaSecretEnc, code, user.email)) throw new AuthError("Invalid authentication code", 400);
+  if (!verifyTotp(user.mfaSecretEnc, code, mfaLabel(user))) throw new AuthError("Invalid authentication code", 400);
   const codes = await generateBackupCodes();
   await enableMfaForUser(userId, codes.hashes);
   await logAudit({ actorId: userId, action: "MFA_ENABLED", targetType: "User", targetId: userId });
@@ -209,8 +215,8 @@ export async function disableMfa(userId: string, password: string, code: string,
   const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
   if (!user.mfaEnabled || !user.mfaSecretEnc) throw new ConflictError("MFA is not enabled");
   if (user.role === "ADMIN" && !opts.allowForAdmins) throw new AuthError("Admins cannot disable MFA", 403);
-  const valid = await verifyPassword(password, user.passwordHash);
-  if (!valid || !verifyTotp(user.mfaSecretEnc, code, user.email)) throw new AuthError("Invalid password or code", 400);
+  const valid = user.passwordHash ? await verifyPassword(password, user.passwordHash) : false;
+  if (!valid || !verifyTotp(user.mfaSecretEnc, code, mfaLabel(user))) throw new AuthError("Invalid password or code", 400);
   await prisma.user.update({ where: { id: userId }, data: { mfaEnabled: false, mfaSecretEnc: null, mfaBackupCodes: [] } });
   await logAudit({ actorId: userId, action: "MFA_DISABLED", targetType: "User", targetId: userId });
 }

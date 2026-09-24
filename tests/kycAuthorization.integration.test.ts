@@ -15,7 +15,7 @@ const { POST: startKycPost } = await import("@/app/api/trader/kyc/route");
 const { PATCH: decisionPatch } = await import("@/app/api/admin/kyc/[id]/decision/route");
 
 function sessionUser(overrides: Partial<SessionUser>): SessionUser {
-  return { id: "u1", name: "Test", email: "test@example.com", role: "TRADER", status: "ACTIVE", mfaEnabled: false, emailVerifiedAt: null, sessionId: "s1", ...overrides };
+  return { id: "u1", name: "Test", email: "test@example.com", phone: null, role: "TRADER", status: "ACTIVE", mfaEnabled: false, emailVerifiedAt: null, sessionId: "s1", ...overrides };
 }
 
 const fixtures = new TestFixtures();

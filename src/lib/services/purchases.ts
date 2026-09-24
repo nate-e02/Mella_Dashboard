@@ -83,7 +83,7 @@ export type InitiatePurchaseResult =
  * attempt is reported back as such instead of charging again.
  */
 export async function initiateChapaPurchase(
-  user: { id: string; name: string; email: string },
+  user: { id: string; name: string; email: string | null },
   templateId: string,
   idempotencyKey?: string,
   attempt = 0,
@@ -109,7 +109,7 @@ export async function initiateChapaPurchase(
       const { checkoutUrl } = await initializeChapaTransaction({
         amount: existing.amount,
         txRef: existing.providerTxRef,
-        email: user.email,
+        email: user.email ?? undefined,
         firstName,
         lastName,
         ...chapaUrls(existing.providerTxRef),
@@ -164,7 +164,7 @@ export async function initiateChapaPurchase(
     const result = await initializeChapaTransaction({
       amount: purchase.amount,
       txRef,
-      email: user.email,
+      email: user.email ?? undefined,
       firstName,
       lastName,
       ...chapaUrls(txRef),

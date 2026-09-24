@@ -21,7 +21,7 @@ vi.mock("@/lib/auth/session", async (importOriginal) => {
 const { PATCH: overridePatch } = await import("@/app/api/admin/kyc/[id]/override/route");
 
 function sessionUser(overrides: Partial<SessionUser>): SessionUser {
-  return { id: "u1", name: "Test", email: "test@example.com", role: "TRADER", status: "ACTIVE", mfaEnabled: false, emailVerifiedAt: null, sessionId: "s1", ...overrides };
+  return { id: "u1", name: "Test", email: "test@example.com", phone: null, role: "TRADER", status: "ACTIVE", mfaEnabled: false, emailVerifiedAt: null, sessionId: "s1", ...overrides };
 }
 
 async function createPendingSubmission(userId: string) {

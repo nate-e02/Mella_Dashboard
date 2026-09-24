@@ -45,7 +45,8 @@ function getSecret() {
 export type SessionUser = {
   id: string;
   name: string;
-  email: string;
+  email: string | null;
+  phone: string | null;
   role: Role;
   status: UserStatus;
   mfaEnabled: boolean;
@@ -150,6 +151,7 @@ export const getSessionUser = cache(async (): Promise<SessionUser | null> => {
     id: session.user.id,
     name: session.user.name,
     email: session.user.email,
+    phone: session.user.phone,
     role: session.user.role,
     status: session.user.status,
     mfaEnabled: session.user.mfaEnabled,

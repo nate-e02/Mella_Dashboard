@@ -33,7 +33,8 @@ export class TestFixtures {
       },
     });
     this.userIds.push(user.id);
-    return user;
+    // Fixture users always have an email and a password (phone-only users are created explicitly).
+    return user as typeof user & { email: string; passwordHash: string };
   }
 
   async createTemplate(overrides: Partial<Parameters<typeof prisma.template.create>[0]["data"]> = {}) {
@@ -176,6 +177,10 @@ export class TestFixtures {
       const allAccountIds = [...new Set([...this.accountIds, ...ownedAccounts.map((a) => a.id)])];
 
       await prisma.ledgerEntry.deleteMany({ where: { userId: { in: this.userIds } } });
+      await prisma.certificate.deleteMany({ where: { userId: { in: this.userIds } } });
+      await prisma.referralReward.deleteMany({
+        where: { OR: [{ referrerId: { in: this.userIds } }, { referredUserId: { in: this.userIds } }, { purchase: { userId: { in: this.userIds } } }] },
+      });
       if (allAccountIds.length > 0) {
         await prisma.order.deleteMany({ where: { accountId: { in: allAccountIds } } });
         await prisma.position.deleteMany({ where: { accountId: { in: allAccountIds } } });
@@ -204,6 +209,7 @@ export class TestFixtures {
 
     if (this.userIds.length > 0) {
       await prisma.session.deleteMany({ where: { userId: { in: this.userIds } } });
+      await prisma.user.updateMany({ where: { referredById: { in: this.userIds } }, data: { referredById: null } });
       await prisma.user.deleteMany({ where: { id: { in: this.userIds } } });
     }
 

@@ -26,6 +26,10 @@ const RULES: Rule[] = [
   { match: (p, m) => p === "/api/trader/purchases" && m === "POST", limit: 10, windowSec: 60, scope: "ip" },
   { match: (p) => WEBHOOK_PATHS.has(p), limit: 120, windowSec: 60, scope: "ip" },
   { match: (p) => p === "/api/payments/chapa/callback", limit: 30, windowSec: 60, scope: "ip" },
+  { match: (p, m) => p === "/api/auth/otp/request" && m === "POST", limit: 5, windowSec: 600, scope: "ip" },
+  { match: (p, m) => p === "/api/auth/otp/verify" && m === "POST", limit: 15, windowSec: 600, scope: "ip" },
+  { match: (p, m) => p === "/api/trader/coupons/validate" && m === "POST", limit: 20, windowSec: 60, scope: "ip" },
+  { match: (p, m) => p === "/api/locale" && m === "POST", limit: 30, windowSec: 60, scope: "ip" },
   { match: (p) => p.startsWith("/api/"), limit: 300, windowSec: 60, scope: "ip" },
 ];
 

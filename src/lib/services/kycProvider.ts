@@ -47,7 +47,7 @@ export interface KycProvider {
    */
   createVerificationSession(input: {
     referenceId: string;
-    user: { id: string; name: string; email: string };
+    user: { id: string; name: string; email: string | null };
   }): Promise<KycSessionConfig>;
 
   /**

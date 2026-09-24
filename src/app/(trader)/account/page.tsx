@@ -37,14 +37,14 @@ export default async function TraderAccountPage() {
             <dt className="text-muted">Name</dt>
             <dd className="text-right font-medium">{user.name}</dd>
             <dt className="text-muted">Email</dt>
-            <dd className="text-right font-medium">{user.email}</dd>
+            <dd className="text-right font-medium">{user.email ?? "—"}</dd>
             <dt className="text-muted">Phone</dt>
             <dd className="text-right font-medium">{user.phone ?? "—"}</dd>
             <dt className="text-muted">Member Since</dt>
             <dd className="text-right font-medium">{formatDate(user.createdAt)}</dd>
           </dl>
         </div>
-        <EmailVerificationCard email={user.email} verified={!!user.emailVerifiedAt} />
+        {user.email && <EmailVerificationCard email={user.email} verified={!!user.emailVerifiedAt} />}
         <KycSubmissionCard
           latest={
             user.kycSubmissions[0]

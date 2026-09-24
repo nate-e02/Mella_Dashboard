@@ -61,7 +61,7 @@ export type StartVerificationResult = {
  * this - it's a built-in Prisma/Postgres transaction isolation level.
  */
 export async function startProviderVerification(
-  user: { id: string; name: string; email: string },
+  user: { id: string; name: string; email: string | null },
   attempt = 0,
 ): Promise<StartVerificationResult> {
   let outcome: { submissionId: string; referenceId: string; isNew: boolean };

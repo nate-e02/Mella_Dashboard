@@ -130,6 +130,10 @@ enum CloseReason {
   ADMIN
   STOP_OUT
   EXPIRED
+  // Rule-driven auto-closes (template forbids holding / news exposure)
+  WEEKEND
+  OVERNIGHT
+  NEWS
 }
 
 enum LedgerEntryType {
@@ -148,6 +152,25 @@ enum VerificationTokenType {
   PHONE_OTP
 }
 
+enum CertificateType {
+  CHALLENGE_PASSED
+  FUNDED
+  PAYOUT
+}
+
+enum ReferralRewardStatus {
+  PENDING
+  APPROVED
+  PAID
+  VOID
+}
+
+enum NewsImpact {
+  LOW
+  MEDIUM
+  HIGH
+}
+
 enum InstrumentCategory {
   FOREX
   METAL
@@ -162,12 +185,15 @@ enum InstrumentCategory {
 model User {
   id                String     @id @default(cuid())
   name              String
-  email             String     @unique
-  passwordHash      String
+  // Optional: phone-first accounts (SMS OTP login) may have no email and no password.
+  email             String?    @unique
+  passwordHash      String?
   role              Role       @default(TRADER)
   status            UserStatus @default(ACTIVE)
   lastActivityAt    DateTime?
+  // E.164, e.g. +251911234567 (see src/lib/phone.ts)
   phone             String?    @unique
+  phoneVerifiedAt   DateTime?
   emailVerifiedAt   DateTime?
   failedLoginCount  Int        @default(0)
   lockedUntil       DateTime?
@@ -178,9 +204,21 @@ model User {
   mfaBackupCodes    Json?
   passwordChangedAt DateTime?
   telegramChatId    String?
+  // UI language: "en" or "am"
+  locale            String     @default("en")
+  // Growth: referral programme and public leaderboard (opt-in, alias only)
+  referralCode      String?    @unique
+  referredById      String?
+  referredBy        User?      @relation("Referrals", fields: [referredById], references: [id])
+  leaderboardOptIn  Boolean    @default(false)
+  publicAlias       String?
   createdAt         DateTime   @default(now())
   updatedAt         DateTime   @updatedAt
 
+  referrals          User[]              @relation("Referrals")
+  referralEarnings   ReferralReward[]    @relation("ReferralEarner")
+  referralSources    ReferralReward[]    @relation("ReferralSource")
+  certificates       Certificate[]
   sessions           Session[]
   purchases          Purchase[]
   tradingAccounts    TradingAccount[]
@@ -197,6 +235,24 @@ model User {
   @@index([role])
   @@index([status])
   @@index([createdAt])
+  @@index([referredById])
+}
+
+/// SMS one-time codes for phone login/sign-up. Keyed by phone (the user may
+/// not exist yet); only a hash of the code is stored.
+model PhoneOtp {
+  id         String    @id @default(cuid())
+  phone      String
+  codeHash   String
+  purpose    String    @default("LOGIN")
+  attempts   Int       @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  ip         String?
+  createdAt  DateTime  @default(now())
+
+  @@index([phone, createdAt])
+  @@index([expiresAt])
 }
 
 model Session {
@@ -324,9 +380,15 @@ model Purchase {
   cancelledAt    DateTime?
   // frozen copy of template config at time of purchase
   snapshot       Json
+  // Coupon applied at checkout: amount = listPrice - discountAmount
+  couponId       String?
+  coupon         Coupon?        @relation(fields: [couponId], references: [id])
+  listPrice      Float?
+  discountAmount Float          @default(0)
 
   tradingAccount TradingAccount?
   ledgerEntries  LedgerEntry[]
+  referralReward ReferralReward?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -335,6 +397,7 @@ model Purchase {
   @@index([status])
   @@index([status, paymentDate])
   @@index([createdAt])
+  @@index([couponId, status])
 }
 
 model TradingAccount {
@@ -393,6 +456,7 @@ model TradingAccount {
   orders          Order[]
   equitySnapshots EquitySnapshot[]
   ledgerEntries   LedgerEntry[]
+  certificates    Certificate[]
 
   @@index([userId])
   @@index([status])
@@ -467,6 +531,9 @@ model Instrument {
   swapShortPerLot    Float              @default(0)
   feedSource         String             @default("STUB")
   feedSymbol         String
+  // Hot-standby feed: the worker switches to it when the primary goes stale
+  backupFeedSource   String?
+  backupFeedSymbol   String?
   enabled            Boolean            @default(true)
   sortOrder          Int                @default(0)
   createdAt          DateTime           @default(now())
@@ -776,4 +843,102 @@ model AuditLog {
   @@index([createdAt])
   @@index([targetType, targetId])
   @@index([action, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Growth: coupons, referrals, certificates
+// ---------------------------------------------------------------------------
+
+model Coupon {
+  id             String    @id @default(cuid())
+  // Stored upper-case; matched case-insensitively by upper-casing input
+  code           String    @unique
+  description    String    @default("")
+  // Exactly one of percentOff (1-100) or amountOff (ETB) is set
+  percentOff     Float?
+  amountOff      Float?
+  currency       String    @default("ETB")
+  maxRedemptions Int?
+  perUserLimit   Int       @default(1)
+  // Counted when a purchase using the coupon is PAID
+  redeemedCount  Int       @default(0)
+  // Empty = valid for every template
+  templateIds    String[]  @default([])
+  validFrom      DateTime?
+  validUntil     DateTime?
+  active         Boolean   @default(true)
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  purchases Purchase[]
+
+  @@index([active])
+}
+
+model ReferralReward {
+  id             String               @id @default(cuid())
+  referrerId     String
+  referrer       User                 @relation("ReferralEarner", fields: [referrerId], references: [id])
+  referredUserId String
+  referredUser   User                 @relation("ReferralSource", fields: [referredUserId], references: [id])
+  // One reward per paid purchase
+  purchaseId     String               @unique
+  purchase       Purchase             @relation(fields: [purchaseId], references: [id])
+  percent        Float
+  amount         Float
+  currency       String               @default("ETB")
+  status         ReferralRewardStatus @default(PENDING)
+  approvedById   String?
+  approvedAt     DateTime?
+  paidById       String?
+  paidAt         DateTime?
+  voidedAt       DateTime?
+  note           String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@index([referrerId, status])
+  @@index([status, createdAt])
+}
+
+model Certificate {
+  id            String          @id @default(cuid())
+  // Short unguessable id used in the public verification URL
+  publicId      String          @unique
+  // Idempotency: "CHALLENGE_PASSED:<accountId>", "FUNDED:<accountId>", "PAYOUT:<payoutId>"
+  dedupeKey     String          @unique
+  userId        String
+  user          User            @relation(fields: [userId], references: [id])
+  accountId     String?
+  account       TradingAccount? @relation(fields: [accountId], references: [id])
+  type          CertificateType
+  title         String
+  recipientName String
+  amount        Float?
+  currency      String          @default("ETB")
+  metadata      Json?
+  issuedAt      DateTime        @default(now())
+
+  @@index([userId, issuedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Economic calendar (news-trading rule)
+// ---------------------------------------------------------------------------
+
+model EconomicEvent {
+  id          String     @id @default(cuid())
+  title       String
+  // ISO currency the event affects, e.g. "USD"; matched against instrument base/quote
+  currency    String
+  impact      NewsImpact @default(HIGH)
+  scheduledAt DateTime
+  source      String     @default("MANUAL")
+  externalId  String?    @unique
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([scheduledAt])
+  @@index([currency, scheduledAt])
 }

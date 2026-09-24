@@ -332,7 +332,7 @@ async function main() {
   console.log("----------------------------------------");
 }
 
-async function seedDemoActivity(traders: { id: string; name: string; email: string }[], adminId: string) {
+async function seedDemoActivity(traders: { id: string; name: string; email: string | null }[], adminId: string) {
   const phase1Templates = await prisma.template.findMany({ where: { phase: "PHASE_1", status: "ACTIVE" }, include: { nextPhase: { include: { nextPhase: true } } } });
 
   function snapshotOf(template: Template, next: TemplateSnapshotLike | null): TemplateSnapshotLike {

@@ -104,7 +104,7 @@ export const dojahKycProvider: KycProvider = {
       // actual verification steps performed (Ethiopian Fayda ID + biometric)
       // are configured against `widgetId` in the Dojah dashboard, not here.
       type: "custom",
-      userData: { first_name: input.user.name.split(/\s+/)[0], email: input.user.email },
+      userData: { first_name: input.user.name.split(/\s+/)[0], email: input.user.email ?? undefined },
     };
   },
 

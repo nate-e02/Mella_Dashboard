@@ -14,7 +14,7 @@
     "test:watch": "vitest",
     "worker": "node --conditions=react-server --import tsx src/worker/index.ts",
     "worker:dev": "node --conditions=react-server --import tsx --watch src/worker/index.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:reset": "prisma migrate reset --force",
     "db:seed:reset-demo": "SEED_RESET_DEMO=true prisma db seed"

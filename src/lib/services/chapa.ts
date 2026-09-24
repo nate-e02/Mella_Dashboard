@@ -159,7 +159,10 @@ function safeCompare(a: string, b: string): boolean {
  * or whitespace and break the signature comparison.
  */
 export function verifyChapaWebhookSignature(rawBody: string, headers: { get(name: string): string | null }): boolean {
-  const secret = getSecretKey();
+  // Chapa signs webhooks with the "secret hash" entered in the dashboard
+  // (Settings -> Webhooks), not with the API secret key. CHAPA_WEBHOOK_SECRET
+  // holds that value; the API key is only a fallback for older setups.
+  const secret = process.env.CHAPA_WEBHOOK_SECRET || getSecretKey();
 
   // Only the body-bound `x-chapa-signature` is accepted. Chapa also sends
   // `chapa-signature` (HMAC of the secret itself), but that value is
@@ -168,6 +171,14 @@ export function verifyChapaWebhookSignature(rawBody: string, headers: { get(name
   // regardless (see purchases.ts).
   const bodySignature = headers.get("x-chapa-signature");
   if (!bodySignature) return false;
-  const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
-  return safeCompare(expected, bodySignature);
+  const candidates = [rawBody];
+  // Chapa computes the HMAC over JSON.stringify(body); accept that
+  // canonical form too in case a proxy re-serialised the whitespace.
+  try {
+    const canonical = JSON.stringify(JSON.parse(rawBody));
+    if (canonical !== rawBody) candidates.push(canonical);
+  } catch {
+    // not JSON: only the raw form can match
+  }
+  return candidates.some((body) => safeCompare(createHmac("sha256", secret).update(body).digest("hex"), bodySignature));
 }

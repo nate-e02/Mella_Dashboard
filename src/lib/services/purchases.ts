@@ -56,7 +56,7 @@ function chapaUrls(txRef: string) {
   // callback URL that never reaches us.
   const base = appUrl();
   return {
-    callbackUrl: `${base}/api/payments/chapa/webhook`,
+    callbackUrl: `${base}/api/payments/chapa/callback`,
     returnUrl: `${base}/purchases?tx_ref=${encodeURIComponent(txRef)}`,
   };
 }

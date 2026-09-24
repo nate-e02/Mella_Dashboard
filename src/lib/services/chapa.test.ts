@@ -174,3 +174,20 @@ describe("isDeliverableEmail", () => {
     expect(isDeliverableEmail("not-an-email")).toBe(false);
   });
 });
+
+describe("verifyChapaWebhookSignature - dashboard secret hash", () => {
+  it("uses CHAPA_WEBHOOK_SECRET when set, and accepts the JSON.stringify form of the body", async () => {
+    const { verifyChapaWebhookSignature } = await import("@/lib/services/chapa");
+    const { createHmac: hmac } = await import("crypto");
+    process.env.CHAPA_WEBHOOK_SECRET = "dashboard-secret-hash";
+    try {
+      const pretty = '{\n  "tx_ref": "abc-123",\n  "status": "success"\n}';
+      const sig = hmac("sha256", "dashboard-secret-hash").update(JSON.stringify(JSON.parse(pretty))).digest("hex");
+      expect(verifyChapaWebhookSignature(pretty, new Headers({ "x-chapa-signature": sig }))).toBe(true);
+      const wrongKey = hmac("sha256", "some-other-key").update(pretty).digest("hex");
+      expect(verifyChapaWebhookSignature(pretty, new Headers({ "x-chapa-signature": wrongKey }))).toBe(false);
+    } finally {
+      delete process.env.CHAPA_WEBHOOK_SECRET;
+    }
+  });
+});

@@ -25,6 +25,7 @@ const RULES: Rule[] = [
   { match: (p, m) => p === "/api/account/change-password" && m === "POST", limit: 5, windowSec: 3600, scope: "ip" },
   { match: (p, m) => p === "/api/trader/purchases" && m === "POST", limit: 10, windowSec: 60, scope: "ip" },
   { match: (p) => WEBHOOK_PATHS.has(p), limit: 120, windowSec: 60, scope: "ip" },
+  { match: (p) => p === "/api/payments/chapa/callback", limit: 30, windowSec: 60, scope: "ip" },
   { match: (p) => p.startsWith("/api/"), limit: 300, windowSec: 60, scope: "ip" },
 ];
 

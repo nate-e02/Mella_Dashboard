@@ -1,16 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, withApiErrorHandling } from "@/lib/auth/guards";
 import { createUser, listUsers } from "@/lib/services/users";
-import { createUserSchema, paginationSchema } from "@/lib/validation/schemas";
-import type { Role, UserStatus } from "@prisma/client";
+import { createUserSchema, enumParam, paginationSchema } from "@/lib/validation/schemas";
 
 export async function GET(req: NextRequest) {
   return withApiErrorHandling(async () => {
     await requireAdmin();
     const { searchParams } = new URL(req.url);
     const { page, pageSize, search } = paginationSchema.parse(Object.fromEntries(searchParams));
-    const role = (searchParams.get("role") as Role | "ALL") ?? "ALL";
-    const status = (searchParams.get("status") as UserStatus | "ALL") ?? "ALL";
+    const role = enumParam(["ADMIN", "TRADER"], searchParams.get("role"));
+    const status = enumParam(["ACTIVE", "DISABLED"], searchParams.get("status"));
 
     const result = await listUsers({ search, role, status, page, pageSize });
     return NextResponse.json(result);

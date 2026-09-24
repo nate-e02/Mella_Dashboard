@@ -11,7 +11,7 @@ vi.mock("@/lib/auth/session", () => ({
 const { requireUser, requireAdmin, requireTrader, AuthError } = await import("@/lib/auth/guards");
 
 function user(overrides: Partial<SessionUser> = {}): SessionUser {
-  return { id: "u1", name: "Test", email: "test@example.com", role: "TRADER", status: "ACTIVE", ...overrides };
+  return { id: "u1", name: "Test", email: "test@example.com", role: "TRADER", status: "ACTIVE", mfaEnabled: false, emailVerifiedAt: null, sessionId: "s1", ...overrides };
 }
 
 describe("requireUser", () => {
@@ -45,6 +45,19 @@ describe("requireAdmin", () => {
   it("throws a 401 AuthError when there is no session at all", async () => {
     getSessionUserMock.mockResolvedValue(null);
     await expect(requireAdmin()).rejects.toMatchObject({ status: 401 });
+  });
+
+  it("requires MFA for admins when ADMIN_MFA_REQUIRED is on", async () => {
+    const previous = process.env.ADMIN_MFA_REQUIRED;
+    process.env.ADMIN_MFA_REQUIRED = "true";
+    try {
+      getSessionUserMock.mockResolvedValue(user({ role: "ADMIN", mfaEnabled: false }));
+      await expect(requireAdmin()).rejects.toMatchObject({ status: 403, code: "MFA_REQUIRED" });
+      getSessionUserMock.mockResolvedValue(user({ role: "ADMIN", mfaEnabled: true }));
+      await expect(requireAdmin()).resolves.toMatchObject({ role: "ADMIN" });
+    } finally {
+      process.env.ADMIN_MFA_REQUIRED = previous;
+    }
   });
 });
 

@@ -38,7 +38,7 @@ export async function getCrmStats() {
     prisma.crmLead.count(),
     prisma.crmLead.count({ where: { status: "QUALIFIED" } }),
     prisma.crmLead.count({ where: { status: "CONVERTED" } }),
-    prisma.purchase.aggregate({ where: { status: "PAID" }, _sum: { amount: true } }),
+    prisma.purchase.aggregate({ where: { status: "PAID", currency: "ETB" }, _sum: { amount: true } }),
     prisma.supportTicket.count({ where: { status: { in: ["OPEN", "PENDING"] } } }),
     prisma.template.count({ where: { status: "ACTIVE" } }),
   ]);

@@ -1,15 +1,96 @@
+# Local development: `docker compose up -d` starts Postgres + Redis only.
+# Full stack (web + worker + db + redis): `docker compose --profile app up -d --build`.
 services:
   db:
     image: postgres:16-alpine
     container_name: mellafx_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: mellafx
-      POSTGRES_PASSWORD: mellafx_dev_password
-      POSTGRES_DB: mellafx
+      POSTGRES_USER: ${POSTGRES_USER:-mellafx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mellafx_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-mellafx}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - mellafx_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mellafx} -d ${POSTGRES_DB:-mellafx}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: mellafx_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - mellafx_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # One-shot: applies pending Prisma migrations, then exits. web and worker
+  # wait for it to finish successfully.
+  migrate:
+    profiles: ["app"]
+    build:
+      context: .
+      target: worker
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mellafx}:${POSTGRES_PASSWORD:-mellafx_dev_password}@db:5432/${POSTGRES_DB:-mellafx}?schema=public
+    command: ["npx", "prisma", "migrate", "deploy"]
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    profiles: ["app"]
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mellafx}:${POSTGRES_PASSWORD:-mellafx_dev_password}@db:5432/${POSTGRES_DB:-mellafx}?schema=public
+      REDIS_URL: redis://redis:6379
+      WORKER_INTERNAL_URL: http://worker:4100
+      WS_PUBLIC_URL: ${WS_PUBLIC_URL:-ws://localhost:4100/ws}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    profiles: ["app"]
+    build:
+      context: .
+      target: worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mellafx}:${POSTGRES_PASSWORD:-mellafx_dev_password}@db:5432/${POSTGRES_DB:-mellafx}?schema=public
+      REDIS_URL: redis://redis:6379
+      WORKER_PORT: "4100"
+      FEED_SOURCES_OVERRIDE: ${FEED_SOURCES_OVERRIDE:-}
+      SEED_DEFAULT_INSTRUMENTS: ${SEED_DEFAULT_INSTRUMENTS:-true}
+    ports:
+      - "${WORKER_HOST_PORT:-4100}:4100"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
 volumes:
   mellafx_pgdata:
+  mellafx_redis:

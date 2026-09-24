@@ -34,7 +34,7 @@ const STATUS_TABS = [
   { label: "Rejected", value: "REJECTED" },
 ];
 
-export function KycTable() {
+export function KycTable({ devOverrides = false }: { devOverrides?: boolean }) {
   const [status, setStatus] = useState("ALL");
   const { search, setSearch, setPage, data, loading, error, refetch } = useServerTable<KycRow>("/api/admin/kyc", { status });
   const [selected, setSelected] = useState<KycRow | null>(null);
@@ -42,7 +42,7 @@ export function KycTable() {
 
   useEffect(() => {
     fetch("/api/admin/kyc/stats").then((r) => r.json()).then(setStats).catch(() => undefined);
-  }, [data]);
+  }, [data.total]);
 
   const columns: Column<KycRow>[] = [
     {
@@ -93,6 +93,7 @@ export function KycTable() {
 
       <KycReviewModal
         submission={selected}
+        devOverrides={devOverrides}
         onClose={() => setSelected(null)}
         onDecided={() => {
           setSelected(null);
@@ -103,7 +104,7 @@ export function KycTable() {
   );
 }
 
-function KycReviewModal({ submission, onClose, onDecided }: { submission: KycRow | null; onClose: () => void; onDecided: () => void }) {
+function KycReviewModal({ submission, devOverrides, onClose, onDecided }: { submission: KycRow | null; devOverrides: boolean; onClose: () => void; onDecided: () => void }) {
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const toast = useToast();
@@ -162,19 +163,15 @@ function KycReviewModal({ submission, onClose, onDecided }: { submission: KycRow
           </div>
         )}
 
-        <DevOverridePanel submission={submission} onOverridden={onDecided} />
+        {devOverrides && <DevOverridePanel submission={submission} onOverridden={onDecided} />}
       </div>
     </Modal>
   );
 }
 
 // ---------------------------------------------------------------------------
-// TEMPORARY DEVELOPMENT KYC OVERRIDE — REMOVE BEFORE PRODUCTION
-// Lets an admin force this submission's status without a real Dojah
-// verification, for local development/testing only. Calls the temporary
-// route at /api/admin/kyc/[id]/override, which is isolated from the real
-// Dojah webhook/verification flow. Delete this component and that route
-// together to remove the feature; nothing else needs to change.
+// Development-only KYC override. Rendered only when ENABLE_DEV_OVERRIDES=true
+// outside production (the matching API route returns 404 otherwise).
 // ---------------------------------------------------------------------------
 function DevOverridePanel({ submission, onOverridden }: { submission: KycRow; onOverridden: () => void }) {
   const [status, setStatus] = useState<"PENDING" | "APPROVED" | "REJECTED">("APPROVED");

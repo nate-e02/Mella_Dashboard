@@ -1,6 +1,10 @@
+import { requireAdminPage } from "@/lib/auth/pageGuards";
 import { UsersTable } from "@/components/admin/UsersTable";
 
-export default function AdminUsersPage() {
+export const dynamic = "force-dynamic";
+
+export default async function AdminUsersPage() {
+  await requireAdminPage();
   return (
     <div className="flex flex-col gap-6">
       <div>

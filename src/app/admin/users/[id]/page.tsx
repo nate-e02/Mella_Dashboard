@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
+import { requireAdminPage } from "@/lib/auth/pageGuards";
 import { getUserDetail } from "@/lib/services/users";
 import { StatusBadge } from "@/components/ui/Badge";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
@@ -7,11 +8,11 @@ import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
 export const dynamic = "force-dynamic";
 
 export default async function AdminUserDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+  const [, { id }] = await Promise.all([requireAdminPage(), params]);
   const user = await getUserDetail(id);
   if (!user) notFound();
 
-  const totalRevenue = user.purchases.filter((p) => p.status === "PAID").reduce((s, p) => s + p.amount, 0);
+  const totalRevenue = user.purchases.filter((p) => p.status === "PAID" && p.currency === "ETB").reduce((s, p) => s + p.amount, 0);
 
   return (
     <div className="flex flex-col gap-6">
@@ -24,13 +25,15 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
           <StatusBadge status={user.status} />
           <StatusBadge status={user.role} />
         </div>
-        <p className="text-sm text-muted">{user.email}</p>
+        <p className="text-sm text-muted">
+          {user.email} · {user.phone ?? "no phone"} · email {user.emailVerifiedAt ? "verified" : "unverified"} · MFA {user.mfaEnabled ? "on" : "off"}
+        </p>
       </div>
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <MiniStat label="Accounts" value={user.tradingAccounts.length} />
         <MiniStat label="Purchases" value={user.purchases.length} />
-        <MiniStat label="Total Revenue" value={formatCurrency(totalRevenue)} />
+        <MiniStat label="Total Revenue" value={formatCurrency(totalRevenue, "ETB")} />
         <MiniStat label="Joined" value={formatDate(user.createdAt)} />
       </div>
 
@@ -59,7 +62,7 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
               <tr key={a.id} className="border-b border-border/60 last:border-0">
                 <td className="px-4 py-2.5">{a.template?.name ?? "—"}</td>
                 <td className="px-4 py-2.5">{a.phase.replace("_", " ")}</td>
-                <td className="px-4 py-2.5">{formatCurrency(a.balance)}</td>
+                <td className="px-4 py-2.5">{formatCurrency(a.balance, "ETB")}</td>
                 <td className="px-4 py-2.5">
                   <StatusBadge status={a.status} />
                 </td>

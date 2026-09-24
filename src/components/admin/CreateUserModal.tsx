@@ -55,7 +55,7 @@ export function CreateUserModal({ open, onClose, onCreated }: { open: boolean; o
         </label>
         <label className="flex flex-col gap-1 text-sm">
           <span className="font-medium">Password</span>
-          <input type="password" className="input-base" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} />
+          <input type="password" className="input-base" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={12} maxLength={72} />
         </label>
         <label className="flex flex-col gap-1 text-sm">
           <span className="font-medium">Role</span>

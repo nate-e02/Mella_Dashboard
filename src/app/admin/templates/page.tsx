@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { requireAdminPage } from "@/lib/auth/pageGuards";
 import { getTemplateStats } from "@/lib/services/templates";
 import { StatCard } from "@/components/ui/Card";
 import { TemplatesExplorer } from "@/components/admin/TemplatesExplorer";
@@ -6,7 +7,7 @@ import { TemplatesExplorer } from "@/components/admin/TemplatesExplorer";
 export const dynamic = "force-dynamic";
 
 export default async function AdminTemplatesPage() {
-  const stats = await getTemplateStats();
+  const [, stats] = await Promise.all([requireAdminPage(), getTemplateStats()]);
 
   return (
     <div className="flex flex-col gap-6">

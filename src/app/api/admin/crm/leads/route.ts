@@ -1,15 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, withApiErrorHandling } from "@/lib/auth/guards";
 import { createLead, listLeads } from "@/lib/services/crm";
-import { leadSchema, paginationSchema } from "@/lib/validation/schemas";
-import type { LeadStatus } from "@prisma/client";
+import { enumParam, leadSchema, paginationSchema } from "@/lib/validation/schemas";
 
 export async function GET(req: NextRequest) {
   return withApiErrorHandling(async () => {
     await requireAdmin();
     const { searchParams } = new URL(req.url);
     const { page, pageSize, search } = paginationSchema.parse(Object.fromEntries(searchParams));
-    const status = (searchParams.get("status") as LeadStatus | "ALL") ?? "ALL";
+    const status = enumParam(["NEW", "QUALIFIED", "NEGOTIATION", "CONVERTED", "LOST"], searchParams.get("status"));
     const result = await listLeads({ search, status, page, pageSize });
     return NextResponse.json(result);
   });

@@ -22,7 +22,7 @@ export function ChangePasswordForm() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError(body.error || "Failed to change password");
+        setError(body.error || body.issues?.[0]?.message || "Failed to change password");
         return;
       }
       toast.push("Password changed successfully", "success");
@@ -45,7 +45,8 @@ export function ChangePasswordForm() {
       </label>
       <label className="flex flex-col gap-1 text-sm">
         <span className="font-medium">New Password</span>
-        <input type="password" className="input-base" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={8} />
+        <input type="password" className="input-base" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={12} maxLength={72} />
+        <span className="text-xs text-muted">At least 12 characters. Other sessions are signed out after a change.</span>
       </label>
       <button type="submit" className="btn-primary self-start" disabled={saving}>
         {saving ? "Saving..." : "Update Password"}

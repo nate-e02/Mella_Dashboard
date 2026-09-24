@@ -30,7 +30,7 @@ const PHASE_LABEL: Record<string, string> = { PHASE_1: "Phase 1", PHASE_2: "Phas
 
 export function TemplatesExplorer() {
   const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("ALL");
+  const [status, setStatus] = useState("ACTIVE");
   const [phase, setPhase] = useState("ALL");
   const [items, setItems] = useState<TemplateRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -63,11 +63,11 @@ export function TemplatesExplorer() {
   }, [search, status, phase]);
 
   const groups = useMemo(() => {
-    const map = new Map<string, { groupName: string; items: TemplateRow[] }>();
+    const map = new Map<string, { groupKey: string; groupName: string; items: TemplateRow[] }>();
     for (const item of items) {
       const existing = map.get(item.groupKey);
       if (existing) existing.items.push(item);
-      else map.set(item.groupKey, { groupName: item.groupName, items: [item] });
+      else map.set(item.groupKey, { groupKey: item.groupKey, groupName: item.groupName, items: [item] });
     }
     return Array.from(map.values());
   }, [items]);
@@ -112,13 +112,14 @@ export function TemplatesExplorer() {
       {!loading &&
         !error &&
         groups.map((group) => (
-          <div key={group.groupName} className="card overflow-hidden !p-0">
+          <div key={group.groupKey} className="card overflow-hidden !p-0">
             <button
-              onClick={() => setCollapsed((c) => ({ ...c, [group.groupName]: !c[group.groupName] }))}
+              onClick={() => setCollapsed((c) => ({ ...c, [group.groupKey]: !c[group.groupKey] }))}
+              aria-expanded={!collapsed[group.groupKey]}
               className="flex w-full items-center justify-between px-5 py-4"
             >
               <div className="flex items-center gap-3">
-                <span className={`transition ${collapsed[group.groupName] ? "-rotate-90" : ""}`}>▾</span>
+                <span aria-hidden className={`transition ${collapsed[group.groupKey] ? "-rotate-90" : ""}`}>▾</span>
                 <span className="font-semibold">{group.groupName}</span>
                 <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-xs text-muted">
                   {group.items.length} templates
@@ -126,7 +127,7 @@ export function TemplatesExplorer() {
               </div>
             </button>
 
-            {!collapsed[group.groupName] && (
+            {!collapsed[group.groupKey] && (
               <div className="overflow-x-auto border-t border-border">
                 <table className="w-full min-w-[900px] border-collapse text-sm">
                   <thead>

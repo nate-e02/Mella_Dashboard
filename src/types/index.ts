@@ -4,6 +4,10 @@ import type { Template } from "@prisma/client";
  * Frozen copy of the challenge-relevant fields of a Template, stored on a
  * Purchase / TradingAccount at the moment of purchase so later edits to the
  * live Template never rewrite an already-sold challenge's rules.
+ *
+ * `nextPhaseSnapshot` freezes the whole progression chain (Phase 2, Funded)
+ * at purchase time as well, so a trader always advances into the rules that
+ * were on sale when they paid - never into a template an admin edited later.
  */
 export type TemplateSnapshot = Pick<
   Template,
@@ -38,9 +42,13 @@ export type TemplateSnapshot = Pick<
   | "dailyLossResetTime"
   | "consistencyRequirement"
   | "nextPhaseId"
-> & { snapshotAt: string };
+> & {
+  snapshotAt: string;
+  drawdownMode?: "STATIC" | "TRAILING";
+  nextPhaseSnapshot?: TemplateSnapshot | null;
+};
 
-export function toTemplateSnapshot(template: Template): TemplateSnapshot {
+export function toTemplateSnapshot(template: Template, nextPhaseSnapshot?: TemplateSnapshot | null): TemplateSnapshot {
   return {
     id: template.id,
     name: template.name,
@@ -58,6 +66,7 @@ export function toTemplateSnapshot(template: Template): TemplateSnapshot {
     profitTarget: template.profitTarget,
     profitSplit: template.profitSplit,
     maxDrawdown: template.maxDrawdown,
+    drawdownMode: template.drawdownMode,
     dailyDrawdown: template.dailyDrawdown,
     minTradingDays: template.minTradingDays,
     maxTradingDays: template.maxTradingDays,
@@ -73,6 +82,7 @@ export function toTemplateSnapshot(template: Template): TemplateSnapshot {
     dailyLossResetTime: template.dailyLossResetTime,
     consistencyRequirement: template.consistencyRequirement,
     nextPhaseId: template.nextPhaseId,
+    nextPhaseSnapshot: nextPhaseSnapshot ?? null,
     snapshotAt: new Date().toISOString(),
   };
 }

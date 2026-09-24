@@ -1,5 +1,9 @@
 import "server-only";
+import { cache } from "react";
 import { prisma } from "@/lib/prisma";
+
+const REPORTING_CURRENCY = "ETB";
+const CACHE_TTL_MS = 60_000;
 
 function startOfDay(d: Date) {
   const x = new Date(d);
@@ -15,136 +19,131 @@ function daysAgo(n: number) {
   return startOfDay(d);
 }
 
-export async function getOverviewStats() {
+type FundedRow = { count: bigint; capital: number; pnl: number; largest: number; approaching: bigint };
+type PayoutRow = { month_count: bigint; month_sum: number; avg_paid: number };
+type BuyerRow = { buyers: bigint; repeat_buyers: bigint };
+
+let memo: { at: number; value: Awaited<ReturnType<typeof computeOverviewStats>> } | null = null;
+
+/**
+ * Admin overview KPIs. Every figure is a SQL aggregate (no full-table loads
+ * into Node) and only ETB rows are summed so mixed currencies can never be
+ * added together. Results are memoised for 60 s per process.
+ */
+async function computeOverviewStats() {
   const now = new Date();
   const todayStart = startOfDay(now);
   const monthStart = startOfMonth(now);
   const weekAgo = daysAgo(7);
+  const thirtyAgo = daysAgo(30);
 
-  const [
-    revenueToday,
-    revenueMonth,
-    revenueTotal,
-    newSignupsToday,
-    fundedAccounts,
-    fundedAgg,
-    phase1Passed,
-    phase1Failed,
-    phase2Passed,
-    phase2Failed,
-    failedThisWeek,
-    failedThisMonth,
-    payoutsThisMonth,
-    allPaidPayouts,
-    refundsLast30,
-    purchasesLast30,
-    payingUsers,
-    allPurchases,
-  ] = await Promise.all([
-    prisma.purchase.aggregate({ where: { status: "PAID", paymentDate: { gte: todayStart } }, _sum: { amount: true } }),
-    prisma.purchase.aggregate({ where: { status: "PAID", paymentDate: { gte: monthStart } }, _sum: { amount: true } }),
-    prisma.purchase.aggregate({ where: { status: "PAID" }, _sum: { amount: true } }),
-    prisma.user.count({ where: { createdAt: { gte: todayStart } } }),
-    prisma.tradingAccount.findMany({ where: { status: "FUNDED" }, select: { startingBalance: true, balance: true } }),
-    prisma.tradingAccount.aggregate({ where: { status: "FUNDED" }, _sum: { startingBalance: true } }),
-    prisma.tradingAccount.count({ where: { phase: "PHASE_1", status: "PASSED" } }),
-    prisma.tradingAccount.count({ where: { phase: "PHASE_1", status: "FAILED" } }),
-    prisma.tradingAccount.count({ where: { phase: "PHASE_2", status: "PASSED" } }),
-    prisma.tradingAccount.count({ where: { phase: "PHASE_2", status: "FAILED" } }),
-    prisma.tradingAccount.count({ where: { status: "FAILED", failedAt: { gte: weekAgo } } }),
-    prisma.tradingAccount.count({ where: { status: "FAILED", failedAt: { gte: monthStart } } }),
-    prisma.payout.findMany({ where: { status: "PAID", paidAt: { gte: monthStart } }, select: { amount: true } }),
-    prisma.payout.findMany({ where: { status: "PAID" }, select: { amount: true } }),
-    prisma.purchase.count({ where: { status: "REFUNDED", refundedAt: { gte: daysAgo(30) } } }),
-    prisma.purchase.count({ where: { createdAt: { gte: daysAgo(30) } } }),
-    prisma.purchase.groupBy({ by: ["userId"], where: { status: "PAID" }, _count: { _all: true } }),
-    prisma.purchase.count({ where: { status: "PAID" } }),
-  ]);
+  const [revenueToday, revenueMonth, revenueTotal, newSignupsToday, phaseCounts, failedThisWeek, failedThisMonth, fundedRows, payoutRows, buyerRows, refundsLast30, purchasesLast30, allPaid] =
+    await Promise.all([
+      prisma.purchase.aggregate({ where: { status: "PAID", currency: REPORTING_CURRENCY, paymentDate: { gte: todayStart } }, _sum: { amount: true } }),
+      prisma.purchase.aggregate({ where: { status: "PAID", currency: REPORTING_CURRENCY, paymentDate: { gte: monthStart } }, _sum: { amount: true } }),
+      prisma.purchase.aggregate({ where: { status: "PAID", currency: REPORTING_CURRENCY }, _sum: { amount: true } }),
+      prisma.user.count({ where: { createdAt: { gte: todayStart } } }),
+      prisma.tradingAccount.groupBy({ by: ["phase", "status"], where: { status: { in: ["PASSED", "FAILED"] } }, _count: { _all: true } }),
+      prisma.tradingAccount.count({ where: { status: "FAILED", failedAt: { gte: weekAgo } } }),
+      prisma.tradingAccount.count({ where: { status: "FAILED", failedAt: { gte: monthStart } } }),
+      prisma.$queryRaw<FundedRow[]>`
+        SELECT count(*) AS count,
+               coalesce(sum("startingBalance"), 0)::float8 AS capital,
+               coalesce(sum("balance" - "startingBalance"), 0)::float8 AS pnl,
+               coalesce(max("balance" - "startingBalance"), 0)::float8 AS largest,
+               count(*) FILTER (WHERE "startingBalance" > 0 AND ("balance" - "startingBalance") / "startingBalance" >= 0.05) AS approaching
+        FROM "TradingAccount" WHERE status = 'FUNDED'`,
+      prisma.$queryRaw<PayoutRow[]>`
+        SELECT count(*) FILTER (WHERE "paidAt" >= ${monthStart}) AS month_count,
+               coalesce(sum(amount) FILTER (WHERE "paidAt" >= ${monthStart}), 0)::float8 AS month_sum,
+               coalesce(avg(amount), 0)::float8 AS avg_paid
+        FROM "Payout" WHERE status = 'PAID' AND currency = ${REPORTING_CURRENCY}`,
+      prisma.$queryRaw<BuyerRow[]>`
+        SELECT count(*) AS buyers, count(*) FILTER (WHERE n > 1) AS repeat_buyers
+        FROM (SELECT "userId", count(*) AS n FROM "Purchase" WHERE status = 'PAID' GROUP BY "userId") t`,
+      prisma.purchase.count({ where: { status: "REFUNDED", refundedAt: { gte: thirtyAgo } } }),
+      prisma.purchase.count({ where: { createdAt: { gte: thirtyAgo } } }),
+      prisma.purchase.count({ where: { status: "PAID" } }),
+    ]);
 
-  const totalFundedPnl = fundedAccounts.reduce((s, a) => s + (a.balance - a.startingBalance), 0);
-  const largestFundedPnl = fundedAccounts.reduce((max, a) => Math.max(max, a.balance - a.startingBalance), 0);
-  const approachingPayout = fundedAccounts.filter(
-    (a) => a.startingBalance > 0 && (a.balance - a.startingBalance) / a.startingBalance >= 0.05,
-  ).length;
-
-  const repeatBuyers = payingUsers.filter((g) => g._count._all > 1).length;
-  const uniquePayingUsers = payingUsers.length;
-
-  const payoutsThisMonthSum = payoutsThisMonth.reduce((s, p) => s + p.amount, 0);
-  const avgPayoutSize = allPaidPayouts.length > 0 ? allPaidPayouts.reduce((s, p) => s + p.amount, 0) / allPaidPayouts.length : 0;
-
+  const count = (phase: "PHASE_1" | "PHASE_2", status: "PASSED" | "FAILED") => phaseCounts.find((c) => c.phase === phase && c.status === status)?._count._all ?? 0;
+  const phase1Passed = count("PHASE_1", "PASSED");
+  const phase1Failed = count("PHASE_1", "FAILED");
+  const phase2Passed = count("PHASE_2", "PASSED");
+  const phase2Failed = count("PHASE_2", "FAILED");
   const phase1Total = phase1Passed + phase1Failed;
   const phase2Total = phase2Passed + phase2Failed;
-
+  const funded = fundedRows[0];
+  const payouts = payoutRows[0];
+  const buyers = buyerRows[0];
   const revenueTotalAmount = revenueTotal._sum.amount ?? 0;
+  const uniquePayingUsers = Number(buyers?.buyers ?? 0);
 
   return {
+    currency: REPORTING_CURRENCY,
     revenueToday: revenueToday._sum.amount ?? 0,
     revenueMonth: revenueMonth._sum.amount ?? 0,
     revenueTotal: revenueTotalAmount,
     newSignupsToday,
-    activeFundedAccounts: fundedAccounts.length,
-    fundedCapitalDeployed: fundedAgg._sum.startingBalance ?? 0,
+    activeFundedAccounts: Number(funded?.count ?? 0),
+    fundedCapitalDeployed: Number(funded?.capital ?? 0),
     phase1PassRate: phase1Total > 0 ? (phase1Passed / phase1Total) * 100 : 0,
     phase1Passed,
     phase1Total,
     phase2PassRate: phase2Total > 0 ? (phase2Passed / phase2Total) * 100 : 0,
     phase2Passed,
     phase2Total,
-    totalFundedPnl,
-    largestFundedPnl,
+    totalFundedPnl: Number(funded?.pnl ?? 0),
+    largestFundedPnl: Number(funded?.largest ?? 0),
     failedThisWeek,
     failedThisMonth,
-    repeatBuyers,
+    repeatBuyers: Number(buyers?.repeat_buyers ?? 0),
     uniquePayingUsers,
-    payoutsThisMonthCount: payoutsThisMonth.length,
-    payoutsThisMonthSum,
-    avgPayoutSize,
+    payoutsThisMonthCount: Number(payouts?.month_count ?? 0),
+    payoutsThisMonthSum: Number(payouts?.month_sum ?? 0),
+    avgPayoutSize: Number(payouts?.avg_paid ?? 0),
     revenuePerUser: uniquePayingUsers > 0 ? revenueTotalAmount / uniquePayingUsers : 0,
-    fundedApproachingPayout: approachingPayout,
+    fundedApproachingPayout: Number(funded?.approaching ?? 0),
     refundRate: purchasesLast30 > 0 ? (refundsLast30 / purchasesLast30) * 100 : 0,
-    chargebackRate: 0,
-    promoDiscounts: 0,
-    totalPaidPurchases: allPurchases,
+    totalPaidPurchases: allPaid,
   };
 }
 
+export const getOverviewStats = cache(async () => {
+  if (memo && Date.now() - memo.at < CACHE_TTL_MS) return memo.value;
+  const value = await computeOverviewStats();
+  memo = { at: Date.now(), value };
+  return value;
+});
+
 export async function getRevenueSeries(days = 30) {
   const start = daysAgo(days - 1);
-  const purchases = await prisma.purchase.findMany({
-    where: { status: "PAID", paymentDate: { gte: start } },
-    select: { amount: true, paymentDate: true },
-  });
-
+  const rows = await prisma.$queryRaw<{ day: Date; revenue: number }[]>`
+    SELECT date_trunc('day', "paymentDate") AS day, sum(amount)::float8 AS revenue
+    FROM "Purchase" WHERE status = 'PAID' AND currency = ${REPORTING_CURRENCY} AND "paymentDate" >= ${start}
+    GROUP BY 1 ORDER BY 1`;
   const byDay = new Map<string, number>();
   for (let i = 0; i < days; i++) {
     const d = new Date(start);
     d.setDate(d.getDate() + i);
     byDay.set(d.toISOString().slice(0, 10), 0);
   }
-  for (const p of purchases) {
-    if (!p.paymentDate) continue;
-    const key = p.paymentDate.toISOString().slice(0, 10);
-    byDay.set(key, (byDay.get(key) ?? 0) + p.amount);
-  }
+  for (const r of rows) byDay.set(r.day.toISOString().slice(0, 10), Number(r.revenue));
   return Array.from(byDay.entries()).map(([date, revenue]) => ({ date, revenue }));
 }
 
 export async function getSignupSeries(days = 30) {
   const start = daysAgo(days - 1);
-  const users = await prisma.user.findMany({
-    where: { createdAt: { gte: start } },
-    select: { createdAt: true },
-  });
+  const rows = await prisma.$queryRaw<{ day: Date; signups: bigint }[]>`
+    SELECT date_trunc('day', "createdAt") AS day, count(*) AS signups
+    FROM "User" WHERE "createdAt" >= ${start}
+    GROUP BY 1 ORDER BY 1`;
   const byDay = new Map<string, number>();
   for (let i = 0; i < days; i++) {
     const d = new Date(start);
     d.setDate(d.getDate() + i);
     byDay.set(d.toISOString().slice(0, 10), 0);
   }
-  for (const u of users) {
-    const key = u.createdAt.toISOString().slice(0, 10);
-    byDay.set(key, (byDay.get(key) ?? 0) + 1);
-  }
+  for (const r of rows) byDay.set(r.day.toISOString().slice(0, 10), Number(r.signups));
   return Array.from(byDay.entries()).map(([date, signups]) => ({ date, signups }));
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { determineChallengeTransition, type ChallengeDecisionInput } from "@/lib/services/challengeRules";
+import { determineChallengeTransition, isLegalManualTransition, maxDrawdownFloor, type ChallengeDecisionInput } from "@/lib/services/challengeRules";
 
 const BASE_SNAPSHOT = { maxDrawdown: 10, dailyDrawdown: 5, profitTarget: 8, minTradingDays: 5 };
 
@@ -95,13 +95,39 @@ describe("determineChallengeTransition - drawdown", () => {
     expect(decision.nextStatus).toBe("FAILED");
   });
 
-  it("uses the high water mark, not the starting balance, as the drawdown reference", () => {
-    // High water mark climbed to 11000 after a prior gain; a drop back to
-    // 9950 is a 1000 (~9.09%) pullback from the peak, under the 10% limit,
-    // even though it is *below* the 10000 starting balance.
+  it("STATIC mode measures from the starting balance regardless of the high water mark", () => {
+    // Peak was 11000; static floor is still 10000 - 1000 = 9000.
     const decision = determineChallengeTransition(baseInput({ highWaterMark: 11000, equity: 9950, netPnl: -50 }));
     expect(decision.ddBreach).toBe(false);
+    expect(decision.maxDrawdownFloor).toBe(9000);
+  });
+
+  it("TRAILING mode trails the peak until it locks at breakeven", () => {
+    expect(maxDrawdownFloor({ startingBalance: 10000, highWaterMark: 10500, maxDrawdownPercent: 10, mode: "TRAILING" })).toBe(9500);
+    expect(maxDrawdownFloor({ startingBalance: 10000, highWaterMark: 11000, maxDrawdownPercent: 10, mode: "TRAILING" })).toBe(10000);
+    expect(maxDrawdownFloor({ startingBalance: 10000, highWaterMark: 13000, maxDrawdownPercent: 10, mode: "TRAILING" })).toBe(10000);
+    const decision = determineChallengeTransition(
+      baseInput({ highWaterMark: 11000, equity: 9999, netPnl: -1, snapshot: { ...BASE_SNAPSHOT, drawdownMode: "TRAILING" } }),
+    );
+    expect(decision.ddBreach).toBe(true);
+  });
+
+  it("a zero or negative limit disables that rule instead of failing every account", () => {
+    const decision = determineChallengeTransition(baseInput({ snapshot: { ...BASE_SNAPSHOT, maxDrawdown: 0, dailyDrawdown: 0 }, equity: 10000 }));
+    expect(decision.ddBreach).toBe(false);
+    expect(decision.dailyBreach).toBe(false);
     expect(decision.nextStatus).toBe("ACTIVE");
+  });
+
+  it("fails an expired challenge that has not met its target, with reason EXPIRED", () => {
+    const decision = determineChallengeTransition(baseInput({ netPnl: 100, equity: 10100, expired: true }));
+    expect(decision.nextStatus).toBe("FAILED");
+    expect(decision.failureReason).toBe("EXPIRED");
+  });
+
+  it("passes an expired challenge that did meet its target", () => {
+    const decision = determineChallengeTransition(baseInput({ netPnl: 800, equity: 10800, expired: true }));
+    expect(decision.nextStatus).toBe("PASSED");
   });
 
   it("fails on the daily drawdown limit independently of the overall limit", () => {
@@ -120,15 +146,15 @@ describe("determineChallengeTransition - drawdown", () => {
   });
 
   it("prioritizes failure over passing when both conditions are met by the same result", () => {
-    // Net P&L clears the profit target, but equity has also breached max
-    // drawdown from a higher peak - breaching risk limits fails the
-    // challenge even though the trader is nominally profitable overall.
-    const decision = determineChallengeTransition(
-      baseInput({ highWaterMark: 12000, equity: 10800, netPnl: 800 }),
-    );
+    // Net P&L clears the profit target, but today's loss from the day's
+    // opening equity (12000 -> 10800 = 10%) breaches the 5% daily limit -
+    // breaching risk limits fails the challenge even though the trader is
+    // nominally profitable overall.
+    const decision = determineChallengeTransition(baseInput({ dailyAnchorBalance: 12000, highWaterMark: 12000, equity: 10800, netPnl: 800 }));
     expect(decision.meetsTarget).toBe(true);
-    expect(decision.ddBreach).toBe(true);
+    expect(decision.dailyBreach).toBe(true);
     expect(decision.nextStatus).toBe("FAILED");
+    expect(decision.failureReason).toBe("DAILY_LOSS");
   });
 });
 
@@ -164,5 +190,21 @@ describe("determineChallengeTransition - terminal / already-decided accounts", (
     expect(decision.nextStatus).toBe("ACTIVE");
     expect(decision.ddBreach).toBe(false);
     expect(decision.dailyBreach).toBe(false);
+  });
+});
+
+describe("isLegalManualTransition", () => {
+  it("allows suspend/freeze/fail from live statuses and reinstatement back to the phase's live status", () => {
+    expect(isLegalManualTransition("ACTIVE", "SUSPENDED", "PHASE_1")).toBe(true);
+    expect(isLegalManualTransition("FUNDED", "FAILED", "FUNDED")).toBe(true);
+    expect(isLegalManualTransition("FAILED", "ACTIVE", "PHASE_1")).toBe(true);
+    expect(isLegalManualTransition("SUSPENDED", "FUNDED", "FUNDED")).toBe(true);
+  });
+
+  it("never allows PASSED by hand, a FUNDED status on a non-funded phase, or a no-op", () => {
+    expect(isLegalManualTransition("ACTIVE", "PASSED", "PHASE_1")).toBe(false);
+    expect(isLegalManualTransition("ACTIVE", "FUNDED", "PHASE_1")).toBe(false);
+    expect(isLegalManualTransition("ACTIVE", "ACTIVE", "PHASE_1")).toBe(false);
+    expect(isLegalManualTransition("PASSED", "ACTIVE", "PHASE_1")).toBe(false);
   });
 });

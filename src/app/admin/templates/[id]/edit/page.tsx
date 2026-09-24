@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { requireAdminPage } from "@/lib/auth/pageGuards";
 import { getTemplateById } from "@/lib/services/templates";
 import { TemplateForm } from "@/components/admin/TemplateForm";
 
@@ -11,8 +12,7 @@ export default async function EditTemplatePage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ view?: string }>;
 }) {
-  const { id } = await params;
-  const { view } = await searchParams;
+  const [, { id }, { view }] = await Promise.all([requireAdminPage(), params, searchParams]);
   const template = await getTemplateById(id);
   if (!template) notFound();
 

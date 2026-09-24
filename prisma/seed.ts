@@ -1,9 +1,22 @@
-import { PrismaClient } from "@prisma/client";
-import bcrypt from "bcryptjs";
+import { PrismaClient, type Template } from "@prisma/client";
+import bcrypt from "bcrypt";
+
+/**
+ * Development / staging seed. Refuses to run in production: it installs
+ * well-known demo credentials and rewrites the template catalogue.
+ */
+
+if (process.env.NODE_ENV === "production" && process.env.ALLOW_PRODUCTION_SEED !== "true") {
+  console.error("Refusing to seed a production database (set ALLOW_PRODUCTION_SEED=true to override for a first-time catalogue import).");
+  process.exit(1);
+}
 
 const prisma = new PrismaClient();
 
-const ACCOUNT_SIZES = [10000, 25000, 50000, 100000];
+/** Account sizes in ETB (≈ $4k, $8k, $20k, $40k at ~125 ETB/USD). */
+const ACCOUNT_SIZES = [500_000, 1_000_000, 2_500_000, 5_000_000];
+/** Phase-1 challenge fees in ETB per account size. */
+const FEES: Record<number, number> = { 500_000: 2_500, 1_000_000: 4_500, 2_500_000: 9_900, 5_000_000: 17_900 };
 
 async function hash(pw: string) {
   return bcrypt.hash(pw, 10);
@@ -15,60 +28,122 @@ async function main() {
   // ---------------------------------------------------------------------
   // Users
   // ---------------------------------------------------------------------
-  const adminPassword = process.env.SEED_ADMIN_PASSWORD || "Admin12345!";
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD || "Admin12345!ChangeMe";
   const admin = await prisma.user.upsert({
     where: { email: "admin@mellafx.local" },
-    update: {},
+    update: { emailVerifiedAt: new Date(), ...(process.env.SEED_RESET_DEMO === "true" ? { passwordHash: await hash(adminPassword) } : {}) },
     create: {
       name: "Platform Admin",
       email: "admin@mellafx.local",
       passwordHash: await hash(adminPassword),
       role: "ADMIN",
       status: "ACTIVE",
+      emailVerifiedAt: new Date(),
+    },
+  });
+  // A second admin so the payout maker-checker flow can be exercised locally.
+  const admin2 = await prisma.user.upsert({
+    where: { email: "finance@mellafx.local" },
+    update: { emailVerifiedAt: new Date(), ...(process.env.SEED_RESET_DEMO === "true" ? { passwordHash: await hash(adminPassword) } : {}) },
+    create: {
+      name: "Finance Admin",
+      email: "finance@mellafx.local",
+      passwordHash: await hash(adminPassword),
+      role: "ADMIN",
+      status: "ACTIVE",
+      emailVerifiedAt: new Date(),
     },
   });
 
   const traderSeeds = [
-    { name: "Alex Morgan", email: "alex@mellafx.local" },
-    { name: "Jamie Chen", email: "jamie@mellafx.local" },
-    { name: "Sam Rivera", email: "sam@mellafx.local" },
-    { name: "Taylor Brooks", email: "taylor@mellafx.local" },
+    { name: "Abebe Kebede", email: "alex@mellafx.local", phone: "+251911000001" },
+    { name: "Hanna Tesfaye", email: "jamie@mellafx.local", phone: "+251911000002" },
+    { name: "Samuel Girma", email: "sam@mellafx.local", phone: "+251911000003" },
+    { name: "Tigist Alemu", email: "taylor@mellafx.local", phone: "+251911000004" },
   ];
-  const traderPassword = process.env.SEED_TRADER_PASSWORD || "Trader1234!";
+  const traderPassword = process.env.SEED_TRADER_PASSWORD || "Trader1234!ChangeMe";
 
   const traders = [];
   for (const t of traderSeeds) {
     const user = await prisma.user.upsert({
       where: { email: t.email },
-      update: {},
+      update: { emailVerifiedAt: new Date(), ...(process.env.SEED_RESET_DEMO === "true" ? { passwordHash: await hash(traderPassword), phone: t.phone } : {}) },
       create: {
         name: t.name,
         email: t.email,
+        phone: t.phone,
         passwordHash: await hash(traderPassword),
         role: "TRADER",
         status: "ACTIVE",
+        emailVerifiedAt: new Date(),
         lastActivityAt: new Date(),
       },
     });
     traders.push(user);
   }
 
+  const demoIds = traders.map((t) => t.id);
+  if (process.env.SEED_RESET_DEMO === "true") {
+    // Rebuild only the seeded demo traders' activity (never touches other users).
+    const accounts = await prisma.tradingAccount.findMany({ where: { userId: { in: demoIds } }, select: { id: true } });
+    const accountIds = accounts.map((a) => a.id);
+    await prisma.ledgerEntry.deleteMany({ where: { userId: { in: demoIds } } });
+    await prisma.order.deleteMany({ where: { accountId: { in: accountIds } } });
+    await prisma.position.deleteMany({ where: { accountId: { in: accountIds } } });
+    await prisma.equitySnapshot.deleteMany({ where: { accountId: { in: accountIds } } });
+    await prisma.trade.deleteMany({ where: { accountId: { in: accountIds } } });
+    await prisma.payout.deleteMany({ where: { userId: { in: demoIds } } });
+    await prisma.tradingAccount.updateMany({ where: { id: { in: accountIds } }, data: { previousAccountId: null } });
+    await prisma.tradingAccount.deleteMany({ where: { id: { in: accountIds } } });
+    await prisma.purchase.deleteMany({ where: { userId: { in: demoIds } } });
+    await prisma.kycSubmission.deleteMany({ where: { userId: { in: demoIds } } });
+    await prisma.supportTicket.deleteMany({ where: { userId: { in: demoIds } } });
+    await prisma.notification.deleteMany({ where: { userId: { in: demoIds } } });
+    console.log(`Demo activity reset for ${demoIds.length} demo traders.`);
+  }
+
   // ---------------------------------------------------------------------
-  // Templates: Standard 2-phase program at 4 account sizes, plus one
-  // Aggressive single-phase-to-funded program.
+  // FX rate + instruments
   // ---------------------------------------------------------------------
-  await prisma.template.deleteMany({});
+  const existingRate = await prisma.fxRate.findFirst({ where: { base: "USD", quote: "ETB" } });
+  if (!existingRate) {
+    await prisma.fxRate.create({ data: { base: "USD", quote: "ETB", rate: 125, source: "SEED" } });
+  }
+  try {
+    const mod = (await import("../src/trading/seedInstruments")) as { ensureDefaultInstruments?: () => Promise<unknown> };
+    if (mod.ensureDefaultInstruments) {
+      await mod.ensureDefaultInstruments();
+      console.log("Instruments ensured.");
+    }
+  } catch (err) {
+    console.warn("Instrument seed skipped:", err instanceof Error ? err.message : err);
+  }
+
+  // ---------------------------------------------------------------------
+  // Templates: Standard 2-phase program at 4 ETB account sizes, plus a
+  // single-phase "Rapid" program with a trailing drawdown.
+  // ---------------------------------------------------------------------
+  const referenced = await prisma.template.count({ where: { OR: [{ purchases: { some: {} } }, { tradingAccounts: { some: {} } }] } });
+  if (referenced === 0) {
+    await prisma.template.deleteMany({});
+  } else {
+    console.log("Templates already referenced by purchases/accounts - archiving old ones instead of deleting.");
+    await prisma.template.updateMany({ data: { status: "ARCHIVED", archivedAt: new Date() } });
+  }
+
+  const common = { currency: "ETB", accountCurrency: "ETB", dailyLossResetTime: "00:00 EAT" } as const;
 
   for (const size of ACCOUNT_SIZES) {
     const groupKey = `standard-${size}`;
-    const groupName = "Standard";
+    const groupName = "Standard 2-Step";
+    const label = `${(size / 1_000_000).toFixed(size >= 1_000_000 ? 1 : 2).replace(/\.?0+$/, "")}M ETB`;
 
     const funded = await prisma.template.create({
       data: {
-        name: `Standard ${size / 1000}K Funded`,
-        description: `Live funded account for ${size / 1000}K. 80/20 profit split, no further evaluation.`,
+        ...common,
+        name: `Standard ${label} Funded`,
+        description: `Funded account of ${label}. 80% profit split, bi-weekly payouts to telebirr, no further evaluation.`,
         price: 0,
-        currency: "USD",
         status: "ACTIVE",
         phase: "FUNDED",
         programType: "STANDARD",
@@ -80,20 +155,21 @@ async function main() {
         profitTarget: null,
         profitSplit: 80,
         maxDrawdown: 10,
+        drawdownMode: "STATIC",
         dailyDrawdown: 5,
         minTradingDays: 0,
         durationDays: null,
         passingRequirements: "N/A - this is a funded account.",
-        failingRequirements: "Breach of max or daily drawdown.",
+        failingRequirements: "Breach of the 5% daily loss or 10% maximum loss.",
       },
     });
 
     const phase2 = await prisma.template.create({
       data: {
-        name: `Standard ${size / 1000}K Phase 2`,
-        description: `Phase 2 verification for ${size / 1000}K. 5% profit target, 60-day window.`,
+        ...common,
+        name: `Standard ${label} Phase 2`,
+        description: `Verification phase for ${label}. 5% profit target, no time limit.`,
         price: 0,
-        currency: "USD",
         status: "ACTIVE",
         phase: "PHASE_2",
         programType: "STANDARD",
@@ -105,21 +181,22 @@ async function main() {
         profitTarget: 5,
         profitSplit: 80,
         maxDrawdown: 10,
+        drawdownMode: "STATIC",
         dailyDrawdown: 5,
-        minTradingDays: 5,
-        durationDays: 60,
-        passingRequirements: "Reach 5% profit target within 60 days while respecting drawdown limits.",
-        failingRequirements: "Breach max drawdown (10%) or daily drawdown (5%).",
+        minTradingDays: 3,
+        durationDays: null,
+        passingRequirements: "Reach the 5% profit target over at least 3 trading days while respecting the loss limits.",
+        failingRequirements: "Breach of the 5% daily loss or 10% maximum loss.",
         nextPhaseId: funded.id,
       },
     });
 
     await prisma.template.create({
       data: {
-        name: `Standard ${size / 1000}K Phase 1`,
-        description: `Phase 1 evaluation for ${size / 1000}K. 8% profit target, 30-day window.`,
-        price: size === 10000 ? 49 : size === 25000 ? 99 : size === 50000 ? 179 : 299,
-        currency: "USD",
+        ...common,
+        name: `Standard ${label} Phase 1`,
+        description: `Evaluation for ${label}. 8% profit target, no time limit, fee refunded with your first payout.`,
+        price: FEES[size],
         status: "ACTIVE",
         phase: "PHASE_1",
         programType: "STANDARD",
@@ -131,27 +208,29 @@ async function main() {
         profitTarget: 8,
         profitSplit: 80,
         maxDrawdown: 10,
+        drawdownMode: "STATIC",
         dailyDrawdown: 5,
-        minTradingDays: 5,
-        durationDays: 30,
-        passingRequirements: "Reach 8% profit target within 30 days while respecting drawdown limits.",
-        failingRequirements: "Breach max drawdown (10%) or daily drawdown (5%).",
+        minTradingDays: 3,
+        durationDays: null,
+        passingRequirements: "Reach the 8% profit target over at least 3 trading days while respecting the loss limits.",
+        failingRequirements: "Breach of the 5% daily loss or 10% maximum loss.",
         nextPhaseId: phase2.id,
       },
     });
   }
 
-  // Aggressive single-phase program (10K + 25K)
-  for (const size of [10000, 25000]) {
-    const groupKey = `aggressive-${size}`;
-    const groupName = "Aggressive";
+  // Rapid single-phase program (trailing drawdown) at the two smallest sizes
+  for (const size of [500_000, 1_000_000]) {
+    const groupKey = `rapid-${size}`;
+    const groupName = "Rapid 1-Step";
+    const label = `${(size / 1_000_000).toFixed(size >= 1_000_000 ? 1 : 2).replace(/\.?0+$/, "")}M ETB`;
 
     const funded = await prisma.template.create({
       data: {
-        name: `Aggressive ${size / 1000}K Funded`,
-        description: `Live funded account for the Aggressive ${size / 1000}K program. 90/10 profit split.`,
+        ...common,
+        name: `Rapid ${label} Funded`,
+        description: `Funded account for the Rapid ${label} program. 80% profit split.`,
         price: 0,
-        currency: "USD",
         status: "ACTIVE",
         phase: "FUNDED",
         programType: "AGGRESSIVE",
@@ -159,24 +238,25 @@ async function main() {
         groupKey,
         startingBalance: size,
         accountSize: size,
-        leverage: 200,
+        leverage: 100,
         profitTarget: null,
-        profitSplit: 90,
-        maxDrawdown: 12,
-        dailyDrawdown: 6,
+        profitSplit: 80,
+        maxDrawdown: 6,
+        drawdownMode: "TRAILING",
+        dailyDrawdown: 4,
         minTradingDays: 0,
         durationDays: null,
         passingRequirements: "N/A - this is a funded account.",
-        failingRequirements: "Breach of max or daily drawdown.",
+        failingRequirements: "Breach of the 4% daily loss or 6% trailing maximum loss.",
       },
     });
 
     await prisma.template.create({
       data: {
-        name: `Aggressive ${size / 1000}K Challenge`,
-        description: `Single-phase aggressive evaluation for ${size / 1000}K. 10% profit target, higher leverage.`,
-        price: size === 10000 ? 69 : 139,
-        currency: "USD",
+        ...common,
+        name: `Rapid ${label} Challenge`,
+        description: `Single-phase evaluation for ${label}. 10% target, 4% daily loss, 6% trailing drawdown.`,
+        price: Math.round(FEES[size] * 1.2),
         status: "ACTIVE",
         phase: "PHASE_1",
         programType: "AGGRESSIVE",
@@ -184,56 +264,79 @@ async function main() {
         groupKey,
         startingBalance: size,
         accountSize: size,
-        leverage: 200,
+        leverage: 100,
         profitTarget: 10,
-        profitSplit: 90,
-        maxDrawdown: 12,
-        dailyDrawdown: 6,
+        profitSplit: 80,
+        maxDrawdown: 6,
+        drawdownMode: "TRAILING",
+        dailyDrawdown: 4,
         minTradingDays: 3,
-        durationDays: 30,
-        passingRequirements: "Reach 10% profit target within 30 days while respecting drawdown limits.",
-        failingRequirements: "Breach max drawdown (12%) or daily drawdown (6%).",
+        durationDays: null,
+        passingRequirements: "Reach the 10% profit target over at least 3 trading days while respecting the loss limits.",
+        failingRequirements: "Breach of the 4% daily loss or 6% trailing maximum loss.",
         nextPhaseId: funded.id,
       },
     });
   }
 
-  // A draft template to demonstrate the Draft status
   await prisma.template.create({
     data: {
-      name: "Crypto 10K Challenge (Draft)",
-      description: "Upcoming crypto challenge program - not yet published.",
-      price: 79,
+      ...common,
+      name: "Crypto 500K Challenge (Draft)",
+      description: "Upcoming crypto-only challenge program - not yet published.",
+      price: 3_000,
       status: "DRAFT",
       phase: "PHASE_1",
       programType: "CRYPTO",
       groupName: "Crypto",
-      groupKey: "crypto-10000",
-      startingBalance: 10000,
-      accountSize: 10000,
-      leverage: 50,
+      groupKey: "crypto-500000",
+      startingBalance: 500_000,
+      accountSize: 500_000,
+      leverage: 20,
       profitTarget: 8,
       maxDrawdown: 10,
       dailyDrawdown: 5,
-      minTradingDays: 5,
-      durationDays: 30,
+      minTradingDays: 3,
+      durationDays: null,
     },
   });
 
-  console.log(`Created ${ACCOUNT_SIZES.length * 3 + 2 * 2 + 1} templates.`);
+  const templateCount = await prisma.template.count({ where: { status: { not: "ARCHIVED" } } });
+  console.log(`Created ${templateCount} templates.`);
 
   // ---------------------------------------------------------------------
-  // Demo purchases + accounts + trades for the seeded traders
+  // Demo purchases + accounts + trades (only when the demo traders have none)
   // ---------------------------------------------------------------------
-  const phase1Templates = await prisma.template.findMany({ where: { phase: "PHASE_1", status: "ACTIVE" } });
-
-  function randomTransactionId() {
-    return `DEMO-SEED-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+  const existingAccounts = await prisma.tradingAccount.count({ where: { userId: { in: demoIds } } });
+  if (existingAccounts > 0) {
+    console.log("Demo accounts already exist - skipping account/trade seed.");
+  } else {
+    await seedDemoActivity(traders, admin.id);
   }
 
-  async function purchaseAndCreateAccount(userId: string, template: (typeof phase1Templates)[number], daysAgo: number) {
-    const createdAt = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
-    const snapshot = {
+  await prisma.crmLead.createMany({
+    data: [
+      { name: "Meron Haile", email: "meron.haile@example.com", status: "NEW", source: "Telegram", value: 2500 },
+      { name: "Dawit Bekele", email: "dawit.bekele@example.com", status: "QUALIFIED", source: "Referral", value: 4500 },
+      { name: "Selam Yohannes", email: "selam.yohannes@example.com", status: "NEGOTIATION", source: "TikTok", value: 9900 },
+      { name: "Yonas Mulu", email: "yonas.mulu@example.com", status: "LOST", source: "Website", value: 2500 },
+    ],
+    skipDuplicates: true,
+  });
+
+  console.log("Seed complete.");
+  console.log("----------------------------------------");
+  console.log("Admin logins:  admin@mellafx.local and finance@mellafx.local (password: SEED_ADMIN_PASSWORD or the dev default)");
+  console.log("Trader logins: alex@mellafx.local, jamie@, sam@, taylor@mellafx.local (password: SEED_TRADER_PASSWORD or the dev default)");
+  console.log(`Second admin id for maker-checker demos: ${admin2.id}`);
+  console.log("----------------------------------------");
+}
+
+async function seedDemoActivity(traders: { id: string; name: string; email: string }[], adminId: string) {
+  const phase1Templates = await prisma.template.findMany({ where: { phase: "PHASE_1", status: "ACTIVE" }, include: { nextPhase: { include: { nextPhase: true } } } });
+
+  function snapshotOf(template: Template, next: TemplateSnapshotLike | null): TemplateSnapshotLike {
+    return {
       id: template.id,
       name: template.name,
       description: template.description,
@@ -250,6 +353,7 @@ async function main() {
       profitTarget: template.profitTarget,
       profitSplit: template.profitSplit,
       maxDrawdown: template.maxDrawdown,
+      drawdownMode: template.drawdownMode,
       dailyDrawdown: template.dailyDrawdown,
       minTradingDays: template.minTradingDays,
       maxTradingDays: template.maxTradingDays,
@@ -265,29 +369,44 @@ async function main() {
       dailyLossResetTime: template.dailyLossResetTime,
       consistencyRequirement: template.consistencyRequirement,
       nextPhaseId: template.nextPhaseId,
-      snapshotAt: createdAt.toISOString(),
+      nextPhaseSnapshot: next,
+      snapshotAt: new Date().toISOString(),
     };
+  }
 
+  type TemplateSnapshotLike = Record<string, unknown>;
+
+  function fullSnapshot(t: (typeof phase1Templates)[number]): TemplateSnapshotLike {
+    const funded = t.nextPhase?.nextPhase ? snapshotOf(t.nextPhase.nextPhase, null) : null;
+    const phase2 = t.nextPhase ? snapshotOf(t.nextPhase, funded) : null;
+    return snapshotOf(t, phase2);
+  }
+
+  async function purchaseAndCreateAccount(userId: string, template: (typeof phase1Templates)[number], daysAgo: number) {
+    const createdAt = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
+    const snapshot = fullSnapshot(template);
     const purchase = await prisma.purchase.create({
       data: {
         userId,
         templateId: template.id,
         status: "PAID",
         amount: template.price,
-        currency: template.currency,
-        providerTxRef: randomTransactionId(),
+        currency: "ETB",
+        providerTxRef: `DEMO-SEED-${Math.random().toString(36).slice(2, 10).toUpperCase()}`,
         paymentDate: createdAt,
         createdAt,
-        snapshot,
+        snapshot: snapshot as never,
       },
     });
-
-    const account = await prisma.tradingAccount.create({
+    await prisma.ledgerEntry.create({
+      data: { userId, purchaseId: purchase.id, type: "PURCHASE", amount: template.price, currency: "ETB", refType: "Purchase", refId: purchase.id, note: "seed" },
+    });
+    return prisma.tradingAccount.create({
       data: {
         userId,
         purchaseId: purchase.id,
         templateId: template.id,
-        snapshot,
+        snapshot: snapshot as never,
         phase: template.phase,
         status: "ACTIVE",
         startingBalance: template.startingBalance,
@@ -295,95 +414,108 @@ async function main() {
         equity: template.startingBalance,
         highWaterMark: template.startingBalance,
         dailyAnchorBalance: template.startingBalance,
+        // Anchored at creation (in the past): the rules engine / live engine
+        // re-anchor to the equity at today's reset boundary on first evaluation,
+        // so seeded historical losses never count against today's limit.
+        dailyAnchorDate: createdAt,
         createdAt,
         updatedAt: createdAt,
       },
     });
-
-    return account;
   }
 
-  const symbols = ["EURUSD", "GBPUSD", "XAUUSD", "US30", "NAS100", "BTCUSD"];
+  const symbols = ["EURUSD", "GBPUSD", "XAUUSD", "USDJPY", "BTCUSD"];
 
   async function seedTrades(accountId: string, startingBalance: number, count: number, winBias: number) {
     let running = 0;
+    let wins = 0;
+    let losses = 0;
+    let grossProfit = 0;
+    let grossLoss = 0;
     let openTime = new Date(Date.now() - count * 20 * 60 * 60 * 1000);
     for (let i = 0; i < count; i++) {
       const isWin = Math.random() < winBias;
-      const volume = Number((0.1 + Math.random() * 2).toFixed(2));
       const pct = (isWin ? 1 : -1) * (0.2 + Math.random() * 1.2);
       const netProfit = Number(((startingBalance * pct) / 100).toFixed(2));
       running += netProfit;
+      if (netProfit > 0) {
+        wins++;
+        grossProfit += netProfit;
+      } else {
+        losses++;
+        grossLoss -= netProfit;
+      }
       const closeTime = new Date(openTime.getTime() + (30 + Math.random() * 240) * 60 * 1000);
+      const entryPrice = Number((1 + Math.random() * 100).toFixed(4));
       await prisma.trade.create({
         data: {
           accountId,
           symbol: symbols[Math.floor(Math.random() * symbols.length)],
           side: Math.random() > 0.5 ? "BUY" : "SELL",
-          volume,
-          entryPrice: Number((1 + Math.random() * 100).toFixed(4)),
-          exitPrice: Number((1 + Math.random() * 100).toFixed(4)),
+          volume: Number((0.1 + Math.random() * 2).toFixed(2)),
+          entryPrice,
+          exitPrice: Number((entryPrice * (1 + pct / 100)).toFixed(4)),
           openTime,
           closeTime,
           profit: netProfit,
           netProfit,
           status: "CLOSED",
+          feedSource: "SEED",
         },
       });
       openTime = new Date(openTime.getTime() + (12 + Math.random() * 24) * 60 * 60 * 1000);
     }
+    await prisma.tradingAccount.update({
+      where: { id: accountId },
+      data: {
+        balance: startingBalance + running,
+        equity: startingBalance + running,
+        highWaterMark: startingBalance + Math.max(0, running),
+        realizedPnl: running,
+        tradeCount: count,
+        winCount: wins,
+        lossCount: losses,
+        grossProfit,
+        grossLoss,
+        lastTradeAt: new Date(),
+      },
+    });
     return running;
   }
 
-  // Trader 1 (Alex): active phase 1 account, doing well
-  const t1 = phase1Templates.find((t) => t.groupKey === "standard-10000")!;
+  // Trader 1: active phase 1, doing well
+  const t1 = phase1Templates.find((t) => t.groupKey === "standard-500000")!;
   const acc1 = await purchaseAndCreateAccount(traders[0].id, t1, 12);
-  const pnl1 = await seedTrades(acc1.id, acc1.startingBalance, 14, 0.62);
-  await prisma.tradingAccount.update({
-    where: { id: acc1.id },
-    data: {
-      balance: acc1.startingBalance + pnl1,
-      equity: acc1.startingBalance + pnl1,
-      highWaterMark: acc1.startingBalance + Math.max(0, pnl1),
-    },
-  });
+  await seedTrades(acc1.id, acc1.startingBalance, 14, 0.62);
 
-  // Trader 2 (Jamie): failed phase 1 account (breached drawdown)
-  const t2 = phase1Templates.find((t) => t.groupKey === "standard-25000")!;
+  // Trader 2: failed phase 1 (breached drawdown)
+  const t2 = phase1Templates.find((t) => t.groupKey === "standard-1000000")!;
   const acc2 = await purchaseAndCreateAccount(traders[1].id, t2, 20);
   const pnl2 = await seedTrades(acc2.id, acc2.startingBalance, 10, 0.3);
   const failedBalance = acc2.startingBalance + Math.min(pnl2, -acc2.startingBalance * 0.11);
   await prisma.tradingAccount.update({
     where: { id: acc2.id },
-    data: {
-      balance: failedBalance,
-      equity: failedBalance,
-      highWaterMark: acc2.startingBalance,
-      status: "FAILED",
-      failedAt: new Date(),
-      statusChangedAt: new Date(),
-    },
+    data: { balance: failedBalance, equity: failedBalance, realizedPnl: failedBalance - acc2.startingBalance, status: "FAILED", failureReason: "MAX_DRAWDOWN", failedAt: new Date(), statusChangedAt: new Date() },
   });
 
-  // Trader 3 (Sam): passed phase 1 -> advanced to phase 2 -> funded, now trading funded
-  const t3 = phase1Templates.find((t) => t.groupKey === "standard-50000")!;
+  // Trader 3: passed phase 1 -> phase 2 -> funded, trading funded, KYC approved
+  const t3 = phase1Templates.find((t) => t.groupKey === "standard-2500000")!;
   const acc3Phase1 = await purchaseAndCreateAccount(traders[2].id, t3, 60);
   await seedTrades(acc3Phase1.id, acc3Phase1.startingBalance, 12, 0.7);
   await prisma.tradingAccount.update({
     where: { id: acc3Phase1.id },
-    data: { status: "PASSED", passedAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000), balance: acc3Phase1.startingBalance * 1.08, equity: acc3Phase1.startingBalance * 1.08 },
+    data: { status: "PASSED", passedAt: new Date(Date.now() - 40 * 86_400_000), balance: acc3Phase1.startingBalance * 1.08, equity: acc3Phase1.startingBalance * 1.08, realizedPnl: acc3Phase1.startingBalance * 0.08 },
   });
-
-  const phase2Template = await prisma.template.findFirst({ where: { groupKey: "standard-50000", phase: "PHASE_2" } });
-  const fundedTemplate = await prisma.template.findFirst({ where: { groupKey: "standard-50000", phase: "FUNDED" } });
-
+  const phase2Template = t3.nextPhase;
+  const fundedTemplate = t3.nextPhase?.nextPhase;
   if (phase2Template && fundedTemplate) {
+    const snapshot = fullSnapshot(t3) as { nextPhaseSnapshot?: { nextPhaseSnapshot?: unknown } };
     const acc3Phase2 = await prisma.tradingAccount.create({
       data: {
         userId: traders[2].id,
         templateId: phase2Template.id,
         previousAccountId: acc3Phase1.id,
-        snapshot: acc3Phase1.snapshot as never,
+        snapshot: (snapshot.nextPhaseSnapshot ?? {}) as never,
         phase: "PHASE_2",
         status: "PASSED",
         startingBalance: phase2Template.startingBalance,
@@ -391,17 +523,17 @@ async function main() {
         equity: phase2Template.startingBalance * 1.06,
         highWaterMark: phase2Template.startingBalance * 1.06,
         dailyAnchorBalance: phase2Template.startingBalance,
-        passedAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000),
-        createdAt: new Date(Date.now() - 38 * 24 * 60 * 60 * 1000),
+        realizedPnl: phase2Template.startingBalance * 0.06,
+        passedAt: new Date(Date.now() - 20 * 86_400_000),
+        createdAt: new Date(Date.now() - 38 * 86_400_000),
       },
     });
-
     const acc3Funded = await prisma.tradingAccount.create({
       data: {
         userId: traders[2].id,
         templateId: fundedTemplate.id,
         previousAccountId: acc3Phase2.id,
-        snapshot: acc3Phase1.snapshot as never,
+        snapshot: (snapshot.nextPhaseSnapshot?.nextPhaseSnapshot ?? {}) as never,
         phase: "FUNDED",
         status: "FUNDED",
         startingBalance: fundedTemplate.startingBalance,
@@ -409,109 +541,29 @@ async function main() {
         equity: fundedTemplate.startingBalance,
         highWaterMark: fundedTemplate.startingBalance,
         dailyAnchorBalance: fundedTemplate.startingBalance,
-        fundedAt: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000),
-        createdAt: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000),
+        fundedAt: new Date(Date.now() - 20 * 86_400_000),
+        createdAt: new Date(Date.now() - 20 * 86_400_000),
       },
     });
-    const pnlFunded = await seedTrades(acc3Funded.id, acc3Funded.startingBalance, 20, 0.65);
-    await prisma.tradingAccount.update({
-      where: { id: acc3Funded.id },
-      data: {
-        balance: acc3Funded.startingBalance + pnlFunded,
-        equity: acc3Funded.startingBalance + pnlFunded,
-        highWaterMark: acc3Funded.startingBalance + Math.max(0, pnlFunded),
-      },
-    });
-
-    await prisma.payout.create({
-      data: {
-        tradingAccountId: acc3Funded.id,
-        userId: traders[2].id,
-        amount: 850,
-        status: "PAID",
-        requestedAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000),
-        paidAt: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000),
-      },
-    });
+    await seedTrades(acc3Funded.id, acc3Funded.startingBalance, 20, 0.65);
   }
 
-  // Trader 4 (Taylor): fresh account, no trades yet (empty state demo)
-  const t4 = phase1Templates.find((t) => t.groupKey === "aggressive-10000")!;
+  // Trader 4: fresh account, no trades yet
+  const t4 = phase1Templates.find((t) => t.groupKey === "rapid-500000")!;
   await purchaseAndCreateAccount(traders[3].id, t4, 1);
 
-  // ---------------------------------------------------------------------
   // KYC submissions
-  // ---------------------------------------------------------------------
-  await prisma.kycSubmission.create({
-    data: {
-      userId: traders[0].id,
-      fullName: traders[0].name,
-      country: "United States",
-      documentType: "Passport",
-      status: "APPROVED",
-      submittedAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000),
-      reviewedAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
-      reviewerId: admin.id,
-      notes: "Documents verified, no issues.",
-    },
-  });
-  await prisma.kycSubmission.create({
-    data: {
-      userId: traders[1].id,
-      fullName: traders[1].name,
-      country: "Canada",
-      documentType: "Driver's License",
-      status: "PENDING",
-      submittedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
-    },
-  });
-  await prisma.kycSubmission.create({
-    data: {
-      userId: traders[2].id,
-      fullName: traders[2].name,
-      country: "United Kingdom",
-      documentType: "National ID",
-      status: "REJECTED",
-      submittedAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000),
-      reviewedAt: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000),
-      reviewerId: admin.id,
-      notes: "Document photo unclear, please resubmit.",
-    },
-  });
-
-  // ---------------------------------------------------------------------
-  // CRM leads + support ticket
-  // ---------------------------------------------------------------------
-  await prisma.crmLead.createMany({
+  await prisma.kycSubmission.createMany({
     data: [
-      { name: "Morgan Lee", email: "morgan.lee@example.com", status: "NEW", source: "Google Ads", value: 199 },
-      { name: "Chris Patel", email: "chris.patel@example.com", status: "QUALIFIED", source: "Referral", value: 99 },
-      { name: "Jordan Kim", email: "jordan.kim@example.com", status: "NEGOTIATION", source: "Website", value: 299 },
-      { name: "Riley Scott", email: "riley.scott@example.com", status: "LOST", source: "Twitter", value: 49 },
+      { userId: traders[2].id, fullName: traders[2].name, country: "Ethiopia", documentType: "Fayda ID", status: "APPROVED", provider: "MANUAL", submittedAt: new Date(Date.now() - 25 * 86_400_000), reviewedAt: new Date(Date.now() - 24 * 86_400_000), reviewerId: adminId, notes: "Verified against Fayda ID." },
+      { userId: traders[0].id, fullName: traders[0].name, country: "Ethiopia", documentType: "Fayda ID", status: "APPROVED", provider: "MANUAL", submittedAt: new Date(Date.now() - 10 * 86_400_000), reviewedAt: new Date(Date.now() - 9 * 86_400_000), reviewerId: adminId, notes: "Verified." },
+      { userId: traders[1].id, fullName: traders[1].name, country: "Ethiopia", documentType: "Fayda ID", status: "PENDING", provider: "MANUAL", submittedAt: new Date(Date.now() - 2 * 86_400_000) },
     ],
-  });
-  // upsert (not create): CrmLead.userId is unique, and this seed script is
-  // meant to be safely re-runnable against an existing database.
-  await prisma.crmLead.upsert({
-    where: { userId: traders[0].id },
-    update: {},
-    create: { name: traders[0].name, email: traders[0].email, status: "CONVERTED", source: "Website", value: t1.price, userId: traders[0].id },
   });
 
   await prisma.supportTicket.create({
-    data: {
-      userId: traders[1].id,
-      subject: "Question about daily drawdown reset time",
-      message: "What timezone is the daily loss reset calculated in?",
-      status: "OPEN",
-    },
+    data: { userId: traders[1].id, subject: "Question about daily loss reset time", message: "What time does the daily loss limit reset?", status: "OPEN" },
   });
-
-  console.log("Seed complete.");
-  console.log("----------------------------------------");
-  console.log(`Admin login:  admin@mellafx.local / ${adminPassword}`);
-  console.log(`Trader login: alex@mellafx.local / ${traderPassword} (and jamie/sam/taylor@mellafx.local)`);
-  console.log("----------------------------------------");
 }
 
 main()

@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import type { Prisma, TemplateStatus } from "@prisma/client";
+import type { Prisma, TemplatePhase, TemplateStatus } from "@prisma/client";
 import { logAudit } from "@/lib/services/audit";
 import type { z } from "zod";
 import type { templateSchema, templateUpdateSchema } from "@/lib/validation/schemas";
@@ -8,7 +8,9 @@ import type { templateSchema, templateUpdateSchema } from "@/lib/validation/sche
 export async function listTemplates(params: {
   search?: string;
   status?: TemplateStatus | "ALL";
-  phase?: string | "ALL";
+  phase?: TemplatePhase | "ALL";
+  page?: number;
+  pageSize?: number;
 }) {
   const where: Prisma.TemplateWhereInput = {};
   if (params.search) {
@@ -19,13 +21,21 @@ export async function listTemplates(params: {
     ];
   }
   if (params.status && params.status !== "ALL") where.status = params.status;
-  if (params.phase && params.phase !== "ALL") where.phase = params.phase as never;
+  if (params.phase && params.phase !== "ALL") where.phase = params.phase;
 
-  return prisma.template.findMany({
-    where,
-    orderBy: [{ groupName: "asc" }, { accountSize: "asc" }, { phase: "asc" }],
-    include: { nextPhase: { select: { id: true, name: true } } },
-  });
+  const page = params.page ?? 1;
+  const pageSize = params.pageSize ?? 100;
+  const [items, total] = await Promise.all([
+    prisma.template.findMany({
+      where,
+      orderBy: [{ groupName: "asc" }, { accountSize: "asc" }, { phase: "asc" }],
+      include: { nextPhase: { select: { id: true, name: true } } },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+    prisma.template.count({ where }),
+  ]);
+  return { items, total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
 }
 
 export async function getTemplateStats() {
@@ -123,5 +133,28 @@ export async function listActiveTemplatesForStorefront() {
   return prisma.template.findMany({
     where: { status: "ACTIVE", phase: "PHASE_1" },
     orderBy: [{ groupName: "asc" }, { accountSize: "asc" }],
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      price: true,
+      currency: true,
+      groupName: true,
+      accountSize: true,
+      accountCurrency: true,
+      startingBalance: true,
+      leverage: true,
+      profitTarget: true,
+      profitSplit: true,
+      maxDrawdown: true,
+      drawdownMode: true,
+      dailyDrawdown: true,
+      minTradingDays: true,
+      durationDays: true,
+      weekendHoldingAllowed: true,
+      newsTradingAllowed: true,
+    },
   });
 }
+
+export type StorefrontTemplate = Awaited<ReturnType<typeof listActiveTemplatesForStorefront>>[number];

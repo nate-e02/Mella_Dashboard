@@ -5,10 +5,39 @@ import { useRouter } from "next/navigation";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 
-const STATUSES = ["ACTIVE", "PASSED", "FAILED", "SUSPENDED", "FROZEN", "FUNDED"];
+/** Mirrors isLegalManualTransition in challengeRules.ts (PASSED is never set by hand). */
+function allowedTargets(status: string, phase: string): string[] {
+  const reinstate = phase === "FUNDED" ? "FUNDED" : "ACTIVE";
+  switch (status) {
+    case "ACTIVE":
+    case "FUNDED":
+      return ["SUSPENDED", "FROZEN", "FAILED"];
+    case "SUSPENDED":
+    case "FROZEN":
+      return [reinstate, status === "SUSPENDED" ? "FROZEN" : "SUSPENDED", "FAILED"];
+    case "FAILED":
+      return [reinstate];
+    default:
+      return [];
+  }
+}
 
-export function AccountAdminActions({ accountId, currentStatus }: { accountId: string; currentStatus: string }) {
+export function AccountAdminActions({
+  accountId,
+  currentStatus,
+  phase,
+  devOverrides,
+  hasNextAccount,
+}: {
+  accountId: string;
+  currentStatus: string;
+  phase: string;
+  devOverrides: boolean;
+  hasNextAccount: boolean;
+}) {
   const [confirmReset, setConfirmReset] = useState(false);
+  const [pendingStatus, setPendingStatus] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [simBias, setSimBias] = useState("0.6");
   const router = useRouter();
@@ -33,20 +62,23 @@ export function AccountAdminActions({ accountId, currentStatus }: { accountId: s
     }
   }
 
-  async function changeStatus(status: string) {
-    if (!status || status === currentStatus) return;
+  async function applyStatus() {
+    if (!pendingStatus) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/admin/accounts/${accountId}/status`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status: pendingStatus, reason: reason || undefined }),
       });
-      if (!res.ok) throw new Error();
-      toast.push("Status updated", "success");
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Failed to update status");
+      toast.push(`Status changed to ${pendingStatus}`, "success");
+      setPendingStatus(null);
+      setReason("");
       router.refresh();
-    } catch {
-      toast.push("Failed to update status", "error");
+    } catch (err) {
+      toast.push(err instanceof Error ? err.message : "Failed to update status", "error");
     } finally {
       setBusy(false);
     }
@@ -56,43 +88,71 @@ export function AccountAdminActions({ accountId, currentStatus }: { accountId: s
     setBusy(true);
     try {
       const res = await fetch(`/api/admin/accounts/${accountId}/reset`, { method: "POST" });
-      if (!res.ok) throw new Error();
-      toast.push("Account reset", "success");
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Failed to reset account");
+      toast.push("Account reset (history archived)", "success");
       setConfirmReset(false);
       router.refresh();
-    } catch {
-      toast.push("Failed to reset account", "error");
+    } catch (err) {
+      toast.push(err instanceof Error ? err.message : "Failed to reset account", "error");
     } finally {
       setBusy(false);
     }
   }
 
+  const targets = allowedTargets(currentStatus, phase);
+
   return (
-    <div className="flex items-center gap-2">
-      <select className="input-base !w-auto !py-1.5 text-xs" value="" onChange={(e) => changeStatus(e.target.value)} disabled={busy}>
-        <option value="">Change status...</option>
-        {STATUSES.filter((s) => s !== currentStatus).map((s) => (
+    <div className="flex flex-wrap items-center gap-2">
+      <label className="sr-only" htmlFor="status-change">
+        Change account status
+      </label>
+      <select id="status-change" className="input-base !w-auto !py-1.5 text-xs" value="" onChange={(e) => e.target.value && setPendingStatus(e.target.value)} disabled={busy || targets.length === 0}>
+        <option value="">{targets.length === 0 ? "No status changes available" : "Change status..."}</option>
+        {targets.map((s) => (
           <option key={s} value={s}>
             {s}
           </option>
         ))}
       </select>
-      <select className="input-base !w-auto !py-1.5 text-xs" value={simBias} onChange={(e) => setSimBias(e.target.value)} disabled={busy} title="Simulated win rate">
-        <option value="0.8">Simulate: Strong Win Streak</option>
-        <option value="0.6">Simulate: Winning</option>
-        <option value="0.4">Simulate: Losing</option>
-        <option value="0.15">Simulate: Breach Drawdown</option>
-      </select>
-      <button className="btn-secondary !py-1.5 text-xs" onClick={simulate} disabled={busy}>
-        Run 10 Demo Trades
-      </button>
-      <button className="btn-secondary !py-1.5 text-xs" onClick={() => setConfirmReset(true)}>
+
+      {devOverrides && (
+        <>
+          <select className="input-base !w-auto !py-1.5 text-xs" value={simBias} onChange={(e) => setSimBias(e.target.value)} disabled={busy} aria-label="Simulated win rate">
+            <option value="0.8">Simulate: Strong Win Streak</option>
+            <option value="0.6">Simulate: Winning</option>
+            <option value="0.4">Simulate: Losing</option>
+            <option value="0.15">Simulate: Breach Drawdown</option>
+          </select>
+          <button className="btn-secondary !py-1.5 text-xs" onClick={simulate} disabled={busy} title="DEV ONLY">
+            Run 10 Demo Trades
+          </button>
+        </>
+      )}
+      <button className="btn-secondary !py-1.5 text-xs" onClick={() => setConfirmReset(true)} disabled={hasNextAccount}>
         Reset Account
       </button>
+
+      <ConfirmDialog
+        open={!!pendingStatus}
+        title={`Set status to ${pendingStatus}?`}
+        description={
+          pendingStatus === "ACTIVE" || pendingStatus === "FUNDED"
+            ? "Reinstating re-anchors the drawdown and daily-loss references to the current equity. Add a reason for the audit log."
+            : "This is recorded in the audit log and the trader is notified. Add a reason."
+        }
+        confirmLabel="Apply"
+        danger={pendingStatus === "FAILED"}
+        loading={busy}
+        onConfirm={applyStatus}
+        onCancel={() => setPendingStatus(null)}
+      >
+        <input className="input-base mt-3" placeholder="Reason (optional)" value={reason} onChange={(e) => setReason(e.target.value)} />
+      </ConfirmDialog>
       <ConfirmDialog
         open={confirmReset}
         title="Reset account?"
-        description="This will delete all trades on this account and reset the balance/status to its starting configuration. This cannot be undone."
+        description="Archives all trades and closes open positions, then resets the balance and status to the starting configuration. History is kept for audit."
         confirmLabel="Reset"
         danger
         loading={busy}

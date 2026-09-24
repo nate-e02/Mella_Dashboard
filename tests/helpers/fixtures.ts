@@ -175,13 +175,18 @@ export class TestFixtures {
       });
       const allAccountIds = [...new Set([...this.accountIds, ...ownedAccounts.map((a) => a.id)])];
 
+      await prisma.ledgerEntry.deleteMany({ where: { userId: { in: this.userIds } } });
       if (allAccountIds.length > 0) {
+        await prisma.order.deleteMany({ where: { accountId: { in: allAccountIds } } });
+        await prisma.position.deleteMany({ where: { accountId: { in: allAccountIds } } });
+        await prisma.equitySnapshot.deleteMany({ where: { accountId: { in: allAccountIds } } });
         await prisma.trade.deleteMany({ where: { accountId: { in: allAccountIds } } });
         await prisma.payout.deleteMany({ where: { tradingAccountId: { in: allAccountIds } } });
         await prisma.tradingAccount.deleteMany({ where: { id: { in: allAccountIds } } });
       }
 
       await prisma.purchase.deleteMany({ where: { userId: { in: this.userIds } } });
+      await prisma.verificationToken.deleteMany({ where: { userId: { in: this.userIds } } });
       await prisma.kycSubmission.deleteMany({ where: { OR: [{ userId: { in: this.userIds } }, { reviewerId: { in: this.userIds } }] } });
       await prisma.crmLead.deleteMany({ where: { userId: { in: this.userIds } } });
       await prisma.supportTicket.deleteMany({ where: { userId: { in: this.userIds } } });

@@ -1,26 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { computeAccountMetrics, currentDrawdownPercent, dailyDrawdownPercent, roundCurrency } from "@/lib/services/calculations";
-import type { Trade } from "@prisma/client";
+type TradeLike = Parameters<typeof computeAccountMetrics>[1][number];
 
-function trade(overrides: Partial<Trade>): Trade {
+function trade(overrides: Partial<TradeLike> & { id?: string }): TradeLike {
   return {
-    id: "t1",
-    accountId: "a1",
-    symbol: "EURUSD",
-    side: "BUY",
     volume: 1,
-    entryPrice: 1,
-    exitPrice: 1,
-    stopLoss: null,
-    takeProfit: null,
     openTime: new Date("2026-01-01T00:00:00Z"),
     closeTime: new Date("2026-01-01T01:00:00Z"),
     profit: 0,
-    commission: 0,
-    swap: 0,
     netProfit: 0,
     status: "CLOSED",
-    createdAt: new Date("2026-01-01T00:00:00Z"),
+    archivedAt: null,
     ...overrides,
   };
 }
@@ -99,6 +89,17 @@ describe("roundCurrency", () => {
   it("preserves genuine one-cent differences", () => {
     expect(roundCurrency(799.99)).toBe(799.99);
     expect(roundCurrency(800.01)).toBe(800.01);
+  });
+
+  it("rounds gains and losses symmetrically (half away from zero)", () => {
+    expect(roundCurrency(1000.005)).toBe(1000.01);
+    expect(roundCurrency(-1000.005)).toBe(-1000.01);
+  });
+
+  it("ignores archived trades", () => {
+    const metrics = computeAccountMetrics(10000, [trade({ netProfit: 500 }), trade({ netProfit: -900, archivedAt: new Date() })]);
+    expect(metrics.netPnl).toBe(500);
+    expect(metrics.totalTrades).toBe(1);
   });
 });
 

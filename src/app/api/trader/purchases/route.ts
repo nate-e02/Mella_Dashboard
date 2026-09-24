@@ -15,6 +15,9 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   return withApiErrorHandling(async () => {
     const user = await requireTrader();
+    if (!user.emailVerifiedAt) {
+      return NextResponse.json({ error: "Please verify your email address before purchasing a challenge", code: "EMAIL_UNVERIFIED" }, { status: 403 });
+    }
     const body = await req.json();
     // Note: initiatePurchaseSchema has no `amount` field - even if a client
     // sends one, it is silently dropped by Zod and never reaches the

@@ -23,6 +23,8 @@ type UserRow = {
   totalPurchases: number;
   totalRevenue: number;
   kycStatus: string;
+  mfaEnabled: boolean;
+  emailVerified: boolean;
   createdAt: string;
   lastActivityAt: string | null;
 };
@@ -57,11 +59,12 @@ export function UsersTable() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: nextStatus }),
       });
-      if (!res.ok) throw new Error();
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Failed to update user");
       toast.push(nextStatus === "DISABLED" ? "User disabled" : "User enabled", "success");
       refetch();
-    } catch {
-      toast.push("Failed to update user", "error");
+    } catch (err) {
+      toast.push(err instanceof Error ? err.message : "Failed to update user", "error");
     }
   }
 
@@ -72,11 +75,12 @@ export function UsersTable() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ role: newRole }),
       });
-      if (!res.ok) throw new Error();
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Failed to update role");
       toast.push("Role updated", "success");
       refetch();
-    } catch {
-      toast.push("Failed to update role", "error");
+    } catch (err) {
+      toast.push(err instanceof Error ? err.message : "Failed to update role", "error");
     }
   }
 
@@ -95,7 +99,7 @@ export function UsersTable() {
       key: "role",
       header: "Role",
       render: (r) => (
-        <select className="input-base !w-auto !py-1 text-xs" value={r.role} onChange={(e) => changeRole(r, e.target.value)}>
+        <select className="input-base !w-auto !py-1 text-xs" aria-label="Role" value={r.role} onChange={(e) => changeRole(r, e.target.value)}>
           <option value="TRADER">Trader</option>
           <option value="ADMIN">Admin</option>
         </select>
@@ -103,8 +107,18 @@ export function UsersTable() {
     },
     { key: "accounts", header: "Accounts", render: (r) => `${r.accountCount} (${r.activeAccounts} active, ${r.fundedAccounts} funded)` },
     { key: "purchases", header: "Purchases", render: (r) => r.totalPurchases },
-    { key: "revenue", header: "Revenue", render: (r) => formatCurrency(r.totalRevenue) },
+    { key: "revenue", header: "Revenue", render: (r) => formatCurrency(r.totalRevenue, "ETB") },
     { key: "kyc", header: "KYC", render: (r) => (r.kycStatus === "NONE" ? <Badge tone="muted">None</Badge> : <StatusBadge status={r.kycStatus} />) },
+    {
+      key: "security",
+      header: "Security",
+      render: (r) => (
+        <div className="flex gap-1">
+          <Badge tone={r.emailVerified ? "success" : "warning"}>{r.emailVerified ? "Email ✓" : "Email ✗"}</Badge>
+          <Badge tone={r.mfaEnabled ? "success" : "muted"}>{r.mfaEnabled ? "MFA ✓" : "MFA ✗"}</Badge>
+        </div>
+      ),
+    },
     { key: "status", header: "Status", render: (r) => <StatusBadge status={r.status} /> },
     { key: "created", header: "Created", render: (r) => formatDate(r.createdAt) },
     { key: "activity", header: "Last Activity", render: (r) => timeAgo(r.lastActivityAt) },

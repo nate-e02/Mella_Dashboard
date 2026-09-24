@@ -1,12 +1,33 @@
 import "server-only";
-import { Prisma } from "@prisma/client";
+import { Prisma, type Template } from "@prisma/client";
 import { randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { toTemplateSnapshot, type TemplateSnapshot } from "@/types";
 import { logAudit } from "@/lib/services/audit";
 import { ConflictError } from "@/lib/auth/guards";
 import { roundCurrency } from "@/lib/services/calculations";
+import { newAccountColumns } from "@/lib/services/challengeEngine";
+import { notifyUser } from "@/lib/services/notifications";
 import { CHAPA_CURRENCY, initializeChapaTransaction, verifyChapaTransaction } from "@/lib/services/chapa";
+import { appUrl } from "@/env";
+import { notifyWorkerAccountChanged } from "@/lib/services/settings";
+
+/** Freezes the template AND its whole progression chain (Phase 2 → Funded) at purchase time. */
+export async function buildPurchaseSnapshot(template: Template, db: Prisma.TransactionClient | typeof prisma = prisma): Promise<TemplateSnapshot> {
+  const chain: Template[] = [];
+  let nextId = template.nextPhaseId;
+  const seen = new Set<string>([template.id]);
+  while (nextId && !seen.has(nextId) && chain.length < 4) {
+    const next = await db.template.findUnique({ where: { id: nextId } });
+    if (!next) break;
+    seen.add(next.id);
+    chain.push(next);
+    nextId = next.nextPhaseId;
+  }
+  let nested: TemplateSnapshot | null = null;
+  for (let i = chain.length - 1; i >= 0; i--) nested = toTemplateSnapshot(chain[i], nested);
+  return toTemplateSnapshot(template, nested);
+}
 
 function isUniqueConstraintOn(err: unknown, field: string): boolean {
   return (
@@ -29,15 +50,14 @@ function splitName(fullName: string): { firstName: string; lastName: string } {
   return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
 }
 
-function getAppUrl(): string {
-  return process.env.APP_URL || "http://localhost:3000";
-}
-
 function chapaUrls(txRef: string) {
-  const base = getAppUrl();
+  // APP_URL is validated at boot (src/env.ts); there is deliberately no
+  // localhost fallback so a misconfigured deployment cannot hand Chapa a
+  // callback URL that never reaches us.
+  const base = appUrl();
   return {
-    callbackUrl: `${base}/api/payments/chapa/webhook`,
-    returnUrl: `${base}/api/payments/chapa/return?tx_ref=${encodeURIComponent(txRef)}`,
+    callbackUrl: `${base}/api/payments/chapa/callback`,
+    returnUrl: `${base}/purchases?tx_ref=${encodeURIComponent(txRef)}`,
   };
 }
 
@@ -66,6 +86,7 @@ export async function initiateChapaPurchase(
   user: { id: string; name: string; email: string },
   templateId: string,
   idempotencyKey?: string,
+  attempt = 0,
 ): Promise<InitiatePurchaseResult> {
   if (idempotencyKey) {
     const existing = await prisma.purchase.findUnique({ where: { idempotencyKey } });
@@ -79,6 +100,12 @@ export async function initiateChapaPurchase(
       // PENDING or FAILED: retry with the same tx_ref rather than creating a
       // second Purchase row for the same logical attempt.
       const { firstName, lastName } = splitName(user.name);
+      // Revive a FAILED attempt before handing the trader a new checkout
+      // session, so a crash in between can never leave a live checkout
+      // pointing at a FAILED purchase.
+      if (existing.status === "FAILED") {
+        await prisma.purchase.updateMany({ where: { id: existing.id, status: "FAILED" }, data: { status: "PENDING" } });
+      }
       const { checkoutUrl } = await initializeChapaTransaction({
         amount: existing.amount,
         txRef: existing.providerTxRef,
@@ -87,9 +114,6 @@ export async function initiateChapaPurchase(
         lastName,
         ...chapaUrls(existing.providerTxRef),
       });
-      if (existing.status === "FAILED") {
-        await prisma.purchase.updateMany({ where: { id: existing.id, status: "FAILED" }, data: { status: "PENDING" } });
-      }
       return { outcome: "REDIRECT", purchaseId: existing.id, checkoutUrl };
     }
   }
@@ -98,8 +122,13 @@ export async function initiateChapaPurchase(
   if (!template) throw new Error("Template not found");
   if (template.status !== "ACTIVE") throw new Error("This challenge is no longer available for purchase");
   if (template.phase !== "PHASE_1") throw new Error("Only Phase 1 challenges can be purchased directly");
+  if (template.currency !== CHAPA_CURRENCY) {
+    // Never charge a price denominated in another currency as if it were ETB.
+    throw new Error("This challenge is not priced in ETB and cannot be purchased right now");
+  }
+  if (!(template.price > 0)) throw new Error("This challenge has no price configured");
 
-  const snapshot = toTemplateSnapshot(template);
+  const snapshot = await buildPurchaseSnapshot(template);
   const txRef = generateTxRef();
 
   let purchase;
@@ -119,11 +148,11 @@ export async function initiateChapaPurchase(
       },
     });
   } catch (err) {
-    if (idempotencyKey && isUniqueConstraintOn(err, "idempotencyKey")) {
+    if (idempotencyKey && isUniqueConstraintOn(err, "idempotencyKey") && attempt < 2) {
       // Lost a race against another concurrent request with the same key
       // (e.g. a double-click) that already inserted the Purchase row -
       // retry the whole call so it takes the "existing" branch above.
-      return initiateChapaPurchase(user, templateId, idempotencyKey);
+      return initiateChapaPurchase(user, templateId, idempotencyKey, attempt + 1);
     }
     throw err;
   }
@@ -178,6 +207,12 @@ type ActivationSource = { source: "CHAPA" } | { source: "ADMIN_TEST"; adminId: s
  * account; every other call is a no-op that returns the existing result.
  */
 export async function activatePurchase(purchaseId: string, activation: ActivationSource) {
+  const result = await activatePurchaseTx(purchaseId, activation);
+  if (result.account) notifyWorkerAccountChanged(result.account.id);
+  return result;
+}
+
+async function activatePurchaseTx(purchaseId: string, activation: ActivationSource) {
   return prisma.$transaction(async (tx) => {
     const purchase = await tx.purchase.findUniqueOrThrow({
       where: { id: purchaseId },
@@ -219,11 +254,7 @@ export async function activatePurchase(purchaseId: string, activation: Activatio
             snapshot: purchase.snapshot as never,
             phase: snapshot.phase,
             status: "ACTIVE",
-            startingBalance: snapshot.startingBalance,
-            balance: snapshot.startingBalance,
-            equity: snapshot.startingBalance,
-            highWaterMark: snapshot.startingBalance,
-            dailyAnchorBalance: snapshot.startingBalance,
+            ...newAccountColumns(snapshot),
           },
         });
       } catch (err) {
@@ -235,13 +266,40 @@ export async function activatePurchase(purchaseId: string, activation: Activatio
       }
     }
 
+    await tx.ledgerEntry.createMany({
+      data: [
+        {
+          userId: purchase.userId,
+          purchaseId: purchase.id,
+          type: "PURCHASE",
+          amount: purchase.amount,
+          currency: purchase.currency,
+          refType: "Purchase",
+          refId: purchase.id,
+          note: activation.source === "ADMIN_TEST" ? "ADMIN TEST ACTIVATION - no real payment" : `Chapa ${purchase.providerTxRef}`,
+        },
+      ],
+      skipDuplicates: true,
+    });
+
     await logAudit(
       {
         actorId: activation.source === "ADMIN_TEST" ? activation.adminId : null,
         action: activation.source === "ADMIN_TEST" ? "PURCHASE_MARKED_PAID_BY_ADMIN_TEST" : "CHAPA_PAYMENT_VERIFIED",
         targetType: "Purchase",
         targetId: purchase.id,
-        after: { accountId: account.id, source: activation.source },
+        after: { accountId: account.id, source: activation.source, amount: purchase.amount, currency: purchase.currency },
+      },
+      tx,
+    );
+
+    await notifyUser(
+      {
+        userId: purchase.userId,
+        title: "Challenge activated",
+        message: `${snapshot.name} is ready. Open the terminal to start trading.`,
+        type: "success",
+        link: `/accounts/${account.id}`,
       },
       tx,
     );
@@ -307,7 +365,14 @@ export async function verifyAndCompleteChapaPurchase(providerTxRef: string): Pro
     return { outcome: "PENDING", purchaseId: purchase.id };
   }
 
-  if (verification.paymentStatus === "pending") {
+  if (verification.paymentStatus === "pending" || verification.paymentStatus === "unknown") {
+    // "unknown" means Chapa answered with a status we don't recognise (API
+    // drift, transient malformed body). Leave the purchase PENDING so the
+    // webhook retry / a later verification can still complete it, rather
+    // than permanently failing a customer who may have paid.
+    if (verification.paymentStatus === "unknown") {
+      console.error("Chapa verification returned an unrecognised status for purchase", purchase.id);
+    }
     return { outcome: "PENDING", purchaseId: purchase.id };
   }
 
@@ -336,12 +401,42 @@ export async function verifyAndCompleteChapaPurchase(providerTxRef: string): Pro
   return { outcome: "PAID", purchaseId: purchase.id };
 }
 
-export async function listPurchasesForUser(userId: string) {
+export async function listPurchasesForUser(userId: string, take = 100) {
   return prisma.purchase.findMany({
     where: { userId },
-    include: { template: true, tradingAccount: true },
+    include: { template: { select: { id: true, name: true } }, tradingAccount: true },
     orderBy: { createdAt: "desc" },
+    take,
   });
+}
+
+/**
+ * Suspends the challenge account attached to a refunded/cancelled purchase
+ * (and any account that progressed from it) so a refunded trader cannot keep
+ * trading. Open positions are closed with reason ADMIN.
+ */
+async function suspendPurchaseAccounts(tx: Prisma.TransactionClient, purchaseId: string, actorId: string, reason: string) {
+  const root = await tx.tradingAccount.findUnique({ where: { purchaseId }, select: { id: true, status: true, userId: true } });
+  if (!root) return [];
+  const chain: { id: string; status: string }[] = [root];
+  let current = root.id;
+  for (let i = 0; i < 4; i++) {
+    const next = await tx.tradingAccount.findUnique({ where: { previousAccountId: current }, select: { id: true, status: true } });
+    if (!next) break;
+    chain.push(next);
+    current = next.id;
+  }
+  const now = new Date();
+  for (const acc of chain) {
+    if (acc.status !== "ACTIVE" && acc.status !== "FUNDED") continue;
+    await tx.position.updateMany({ where: { accountId: acc.id, status: "OPEN" }, data: { status: "CLOSED", closedAt: now, closeReason: "ADMIN", floatingPnl: 0, marginUsed: 0 } });
+    await tx.tradingAccount.update({ where: { id: acc.id }, data: { status: "SUSPENDED", statusChangedAt: now, failureReason: reason, marginUsed: 0 } });
+    await logAudit(
+      { actorId, action: "ACCOUNT_STATUS_MANUAL_CHANGE", targetType: "TradingAccount", targetId: acc.id, before: { status: acc.status }, after: { status: "SUSPENDED", reason } },
+      tx,
+    );
+  }
+  return chain.map((c) => c.id);
 }
 
 export async function refundPurchase(purchaseId: string, actorId: string) {
@@ -355,6 +450,11 @@ export async function refundPurchase(purchaseId: string, actorId: string) {
       where: { id: purchaseId },
       data: { status: "REFUNDED", refundedAt: new Date() },
     });
+    await tx.ledgerEntry.createMany({
+      data: [{ userId: before.userId, purchaseId: before.id, type: "REFUND", amount: -before.amount, currency: before.currency, refType: "Purchase", refId: before.id }],
+      skipDuplicates: true,
+    });
+    const suspended = await suspendPurchaseAccounts(tx, purchaseId, actorId, "PURCHASE_REFUNDED");
     await logAudit(
       {
         actorId,
@@ -362,7 +462,7 @@ export async function refundPurchase(purchaseId: string, actorId: string) {
         targetType: "Purchase",
         targetId: purchaseId,
         before: { status: before.status },
-        after: { status: updated.status },
+        after: { status: updated.status, suspendedAccounts: suspended },
       },
       tx,
     );
@@ -381,6 +481,7 @@ export async function cancelPurchase(purchaseId: string, actorId: string) {
       where: { id: purchaseId },
       data: { status: "CANCELLED", cancelledAt: new Date() },
     });
+    const suspended = await suspendPurchaseAccounts(tx, purchaseId, actorId, "PURCHASE_CANCELLED");
     await logAudit(
       {
         actorId,
@@ -388,10 +489,17 @@ export async function cancelPurchase(purchaseId: string, actorId: string) {
         targetType: "Purchase",
         targetId: purchaseId,
         before: { status: before.status },
-        after: { status: updated.status },
+        after: { status: updated.status, suspendedAccounts: suspended },
       },
       tx,
     );
     return updated;
   });
+}
+
+/** Purchase lookup for the authenticated owner (used by the post-checkout verify step). */
+export async function findPurchaseByTxRefForUser(providerTxRef: string, userId: string) {
+  const purchase = await prisma.purchase.findUnique({ where: { providerTxRef }, select: { id: true, userId: true, status: true } });
+  if (!purchase || purchase.userId !== userId) return null;
+  return purchase;
 }

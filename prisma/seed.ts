@@ -67,7 +67,7 @@ async function main() {
   for (const t of traderSeeds) {
     const user = await prisma.user.upsert({
       where: { email: t.email },
-      update: { emailVerifiedAt: new Date(), ...(process.env.SEED_RESET_DEMO === "true" ? { passwordHash: await hash(traderPassword), phone: t.phone } : {}) },
+      update: { emailVerifiedAt: new Date(), phoneVerifiedAt: new Date(), ...(process.env.SEED_RESET_DEMO === "true" ? { passwordHash: await hash(traderPassword), phone: t.phone } : {}) },
       create: {
         name: t.name,
         email: t.email,
@@ -76,6 +76,7 @@ async function main() {
         role: "TRADER",
         status: "ACTIVE",
         emailVerifiedAt: new Date(),
+        phoneVerifiedAt: new Date(),
         lastActivityAt: new Date(),
       },
     });
@@ -88,6 +89,8 @@ async function main() {
     const accounts = await prisma.tradingAccount.findMany({ where: { userId: { in: demoIds } }, select: { id: true } });
     const accountIds = accounts.map((a) => a.id);
     await prisma.ledgerEntry.deleteMany({ where: { userId: { in: demoIds } } });
+    await prisma.certificate.deleteMany({ where: { userId: { in: demoIds } } });
+    await prisma.referralReward.deleteMany({ where: { OR: [{ referrerId: { in: demoIds } }, { referredUserId: { in: demoIds } }] } });
     await prisma.order.deleteMany({ where: { accountId: { in: accountIds } } });
     await prisma.position.deleteMany({ where: { accountId: { in: accountIds } } });
     await prisma.equitySnapshot.deleteMany({ where: { accountId: { in: accountIds } } });
@@ -195,7 +198,7 @@ async function main() {
       data: {
         ...common,
         name: `Standard ${label} Phase 1`,
-        description: `Evaluation for ${label}. 8% profit target, no time limit, fee refunded with your first payout.`,
+        description: `Evaluation for ${label}. 8% profit target, no time limit.`,
         price: FEES[size],
         status: "ACTIVE",
         phase: "PHASE_1",
@@ -324,10 +327,14 @@ async function main() {
     skipDuplicates: true,
   });
 
+  await seedGrowthDemo();
+
   console.log("Seed complete.");
   console.log("----------------------------------------");
   console.log("Admin logins:  admin@mellafx.local and finance@mellafx.local (password: SEED_ADMIN_PASSWORD or the dev default)");
   console.log("Trader logins: alex@mellafx.local, jamie@, sam@, taylor@mellafx.local (password: SEED_TRADER_PASSWORD or the dev default)");
+  console.log("Phone login:   0911000001 (alex) - the SMS code is printed in the dev-server log");
+  console.log("Coupons:       WELCOME10 (10% off), FREETRIAL (free smallest challenge, 50 uses)");
   console.log(`Second admin id for maker-checker demos: ${admin2.id}`);
   console.log("----------------------------------------");
 }
@@ -574,3 +581,35 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
+
+/** Demo coupons, referral codes and leaderboard aliases (idempotent; never overwrites real choices). */
+async function seedGrowthDemo() {
+  await prisma.coupon.upsert({
+    where: { code: "WELCOME10" },
+    update: {},
+    create: { code: "WELCOME10", description: "10% off any challenge (demo)", percentOff: 10, perUserLimit: 1 },
+  });
+  const smallestPhase1 = await prisma.template.findFirst({ where: { status: "ACTIVE", phase: "PHASE_1" }, orderBy: { price: "asc" } });
+  if (smallestPhase1) {
+    await prisma.coupon.upsert({
+      where: { code: "FREETRIAL" },
+      update: { templateIds: [smallestPhase1.id] },
+      create: { code: "FREETRIAL", description: "Free smallest challenge (demo)", percentOff: 100, maxRedemptions: 50, perUserLimit: 1, templateIds: [smallestPhase1.id] },
+    });
+  }
+
+  // Referral codes use the alphabet 23456789ABCDEFGHJKMNPQRSTUVWXYZ (no 0/1/I/L/O), 8 chars.
+  const growthDemo = [
+    { email: "alex@mellafx.local", referralCode: "ABEBE234", alias: "Addis Bull" },
+    { email: "jamie@mellafx.local", referralCode: "HANNA234", alias: "Hanna Pips" },
+    { email: "sam@mellafx.local", referralCode: "SAMG2345", alias: "Sam Swing" },
+    { email: "taylor@mellafx.local", referralCode: "TGST2345", alias: "Tigist FX" },
+  ];
+  for (const d of growthDemo) {
+    await prisma.user.updateMany({ where: { email: d.email, referralCode: null }, data: { referralCode: d.referralCode } });
+    await prisma.user.updateMany({ where: { email: d.email, publicAlias: null }, data: { leaderboardOptIn: true, publicAlias: d.alias } });
+  }
+  const alex = await prisma.user.findUnique({ where: { email: "alex@mellafx.local" }, select: { id: true } });
+  if (alex) await prisma.user.updateMany({ where: { email: "sam@mellafx.local", referredById: null }, data: { referredById: alex.id } });
+  console.log("Growth demo data ensured (coupons, referral codes, leaderboard aliases).");
+}

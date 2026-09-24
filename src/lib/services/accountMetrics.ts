@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { AccountMetrics } from "@/lib/services/calculations";
 import { roundCurrency } from "@/lib/services/calculations";
+import { consistencyCheck, type ConsistencyResult } from "@/lib/services/challengeRules";
 import { parseResetTime, type ResetTime } from "@/lib/services/dailyReset";
 
 type Db = Prisma.TransactionClient | typeof prisma;
@@ -124,6 +125,34 @@ export async function buildEquityCurveFromDb(accountId: string, startingBalance:
     points.push({ date: r.day.toISOString().slice(0, 10), equity: running });
   }
   return points;
+}
+
+/**
+ * Net profit per trading day (the account's daily-reset boundary, same
+ * bucketing as `aggregateTrades`), non-archived closed trades only, oldest
+ * day first. Input for the consistency rule.
+ */
+export async function dailyNetProfits(accountId: string, resetTime: ResetTime, db: Db = prisma): Promise<number[]> {
+  const shiftMinutes = resetTime.offsetMinutes - (resetTime.hour * 60 + resetTime.minute);
+  const rows = await db.$queryRaw<{ day: Date; net: number }[]>`
+    SELECT date(coalesce("closeTime", "openTime") + make_interval(mins => ${shiftMinutes}::int)) AS day, sum("netProfit")::float8 AS net
+    FROM "Trade"
+    WHERE "accountId" = ${accountId} AND status = 'CLOSED' AND "archivedAt" IS NULL
+    GROUP BY 1 ORDER BY 1
+  `;
+  return rows.map((r) => roundCurrency(Number(r.net)));
+}
+
+/** Consistency-rule evaluation for an account (disabled result when its template has no requirement). */
+export async function computeConsistency(
+  account: { id: string; snapshot: unknown },
+  db: Db = prisma,
+): Promise<ConsistencyResult> {
+  const snap = (account.snapshot as { consistencyRequirement?: number | null; dailyLossResetTime?: string } | null) ?? {};
+  const limitPercent = snap.consistencyRequirement ?? null;
+  if (limitPercent == null || !(limitPercent > 0)) return consistencyCheck({ dailyNetProfits: [], limitPercent: null });
+  const days = await dailyNetProfits(account.id, parseResetTime(snap.dailyLossResetTime), db);
+  return consistencyCheck({ dailyNetProfits: days, limitPercent });
 }
 
 /** Count of distinct trading days in the account's reset zone. */

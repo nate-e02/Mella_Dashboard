@@ -167,7 +167,7 @@ export class Gateway {
         for (const c of subs) this.send(c, frame);
       }),
       bus.on("market.status", (ev) => {
-        const frame: ServerMessage = { type: "market.status", state: ev.state, reason: ev.reason, symbols: ev.symbols };
+        const frame: ServerMessage = { type: "market.status", state: ev.state, reason: ev.reason, symbols: ev.symbols, news: ev.news };
         for (const c of this.clients) this.send(c, frame);
       }),
     );
@@ -262,7 +262,7 @@ export class Gateway {
     });
     this.send(client, { type: "auth.ok", userId: client.userId, serverTime: Date.now() });
     const ms = this.opts.engine.marketStatus();
-    this.send(client, { type: "market.status", state: ms.state, reason: ms.reason, symbols: ms.symbols });
+    this.send(client, { type: "market.status", state: ms.state, reason: ms.reason, symbols: ms.symbols, news: ms.news });
     log.debug({ client: client.id, userId: client.userId }, "gateway: connected");
     for (const raw of early) await this.onMessage(client, raw);
   }
@@ -359,7 +359,7 @@ export class Gateway {
         if (q) this.send(client, { type: "tick", symbol: ch.symbol, bid: q.bid, ask: q.ask, ts: q.ts });
       } else if (ch.kind === "market") {
         const ms = this.opts.engine.marketStatus();
-        this.send(client, { type: "market.status", state: ms.state, reason: ms.reason, symbols: ms.symbols });
+        this.send(client, { type: "market.status", state: ms.state, reason: ms.reason, symbols: ms.symbols, news: ms.news });
       }
     }
   }

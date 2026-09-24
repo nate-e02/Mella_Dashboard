@@ -11,7 +11,7 @@ vi.mock("@/lib/auth/session", () => ({
 const { requireUser, requireAdmin, requireTrader, AuthError } = await import("@/lib/auth/guards");
 
 function user(overrides: Partial<SessionUser> = {}): SessionUser {
-  return { id: "u1", name: "Test", email: "test@example.com", phone: null, role: "TRADER", status: "ACTIVE", mfaEnabled: false, emailVerifiedAt: null, sessionId: "s1", ...overrides };
+  return { id: "u1", name: "Test", email: "test@example.com", phone: null, role: "TRADER", status: "ACTIVE", mfaEnabled: false, emailVerifiedAt: null, phoneVerifiedAt: null, sessionId: "s1", ...overrides };
 }
 
 describe("requireUser", () => {

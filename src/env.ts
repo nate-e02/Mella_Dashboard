@@ -26,8 +26,15 @@ const schema = z.object({
   DOJAH_SECRET_KEY: z.string().optional(),
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
+  SMS_PROVIDER: z.enum(["afromessage", "generic"]).optional(),
   SMS_GATEWAY_URL: z.string().optional(),
   SMS_API_KEY: z.string().optional(),
+  SMS_SENDER_ID: z.string().optional(),
+  AFROMESSAGE_TOKEN: z.string().optional(),
+  AFROMESSAGE_IDENTIFIER_ID: z.string().optional(),
+  AFROMESSAGE_SENDER_NAME: z.string().optional(),
+  CLIENT_IP_HEADER: z.string().optional(),
+  TRUSTED_PROXY_HOPS: z.string().regex(/^\d+$/, "TRUSTED_PROXY_HOPS must be a whole number").optional(),
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   ENABLE_DEV_OVERRIDES: z.string().optional(),
   ADMIN_MFA_REQUIRED: z.string().optional(),
@@ -53,6 +60,8 @@ export function getEnv(): Env {
     if (!env.WORKER_INTERNAL_TOKEN) errors.push("WORKER_INTERNAL_TOKEN is required in production");
     if (env.ENABLE_DEV_OVERRIDES === "true") errors.push("ENABLE_DEV_OVERRIDES must not be enabled in production");
     if (!env.REDIS_URL) errors.push("REDIS_URL is required in production (rate limiting across replicas)");
+    if (env.SMS_PROVIDER === "afromessage" && (!env.AFROMESSAGE_TOKEN || !env.AFROMESSAGE_IDENTIFIER_ID))
+      errors.push("SMS_PROVIDER=afromessage needs AFROMESSAGE_TOKEN and AFROMESSAGE_IDENTIFIER_ID");
     if (errors.length > 0) throw new Error(`Refusing to start in production:\n  ${errors.join("\n  ")}`);
   }
 

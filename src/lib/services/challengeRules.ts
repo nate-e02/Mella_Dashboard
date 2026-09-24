@@ -31,6 +31,12 @@ export type ChallengeDecisionInput = {
   snapshot: ChallengeRuleSnapshot;
   /** True when the challenge's time window has elapsed (expiresAt < now). */
   expired?: boolean;
+  /**
+   * Result of the consistency rule (see `consistencyCheck`), when the
+   * template has one. An inconsistent account cannot pass yet but is never
+   * failed for it: it keeps trading until its profit is spread out enough.
+   */
+  consistency?: { ok: boolean } | null;
 };
 
 export type FailureReason = "MAX_DRAWDOWN" | "DAILY_LOSS" | "EXPIRED";
@@ -42,6 +48,7 @@ export type ChallengeDecision = {
   dailyBreach: boolean;
   meetsTarget: boolean;
   meetsMinDays: boolean;
+  meetsConsistency: boolean;
   failureReason: FailureReason | null;
   /** Absolute equity floor below which the max-drawdown rule fails the account. */
   maxDrawdownFloor: number;
@@ -118,6 +125,7 @@ export function determineChallengeTransition(input: ChallengeDecisionInput): Cha
       : null;
   const meetsTarget = targetAmount !== null && netPnlC >= targetAmount;
   const meetsMinDays = input.tradingDays >= input.snapshot.minTradingDays;
+  const meetsConsistency = input.consistency == null || input.consistency.ok;
 
   let nextStatus: AccountStatus = input.status;
   let failureReason: FailureReason | null = null;
@@ -132,7 +140,7 @@ export function determineChallengeTransition(input: ChallengeDecisionInput): Cha
     } else if (dailyBreach) {
       nextStatus = "FAILED";
       failureReason = "DAILY_LOSS";
-    } else if (input.phase !== "FUNDED" && input.status === "ACTIVE" && meetsTarget && meetsMinDays) {
+    } else if (input.phase !== "FUNDED" && input.status === "ACTIVE" && meetsTarget && meetsMinDays && meetsConsistency) {
       nextStatus = "PASSED";
     } else if (input.expired && input.phase !== "FUNDED" && input.status === "ACTIVE") {
       nextStatus = "FAILED";
@@ -147,10 +155,42 @@ export function determineChallengeTransition(input: ChallengeDecisionInput): Cha
     dailyBreach,
     meetsTarget,
     meetsMinDays,
+    meetsConsistency,
     failureReason,
     maxDrawdownFloor: ddFloor,
     dailyLossFloor: dlFloor,
   };
+}
+
+export type ConsistencyResult = {
+  /** False when the template has no consistency requirement (then `ok` is always true). */
+  enabled: boolean;
+  ok: boolean;
+  limitPercent: number | null;
+  /** Best single trading day's net profit (0 when no day was profitable). */
+  bestDay: number;
+  /** Net profit over all trading days. */
+  total: number;
+  /** bestDay / total in percent, or null while total <= 0 (not evaluable yet). */
+  ratioPercent: number | null;
+};
+
+/**
+ * Consistency rule: the best single trading day's net profit must be at most
+ * `limitPercent`% of the total net profit, so a challenge cannot be passed
+ * (or a payout drawn) on one lucky day. Disabled when the limit is unset or
+ * not positive. With no net profit yet the rule cannot be satisfied (there is
+ * nothing to pass on). Cent-exact like the other money comparisons: a best
+ * day of exactly the limit passes.
+ */
+export function consistencyCheck(input: { dailyNetProfits: readonly number[]; limitPercent: number | null | undefined }): ConsistencyResult {
+  const limit = input.limitPercent != null && Number.isFinite(input.limitPercent) && input.limitPercent > 0 ? input.limitPercent : null;
+  const total = roundCurrency(input.dailyNetProfits.reduce((s, v) => s + v, 0));
+  const bestDay = roundCurrency(Math.max(0, ...input.dailyNetProfits));
+  const ratioPercent = total > 0 ? Math.round((bestDay / total) * 10_000) / 100 : null;
+  if (limit == null) return { enabled: false, ok: true, limitPercent: null, bestDay, total, ratioPercent };
+  const ok = total > 0 && bestDay <= roundCurrency(total * (limit / 100));
+  return { enabled: true, ok, limitPercent: limit, bestDay, total, ratioPercent };
 }
 
 /**

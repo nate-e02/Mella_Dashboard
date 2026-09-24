@@ -1,20 +1,23 @@
 "use client";
 
+import { useT } from "@/i18n/client";
+
 export function SearchInput({
   value,
   onChange,
-  placeholder = "Search...",
+  placeholder,
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
 }) {
+  const t = useT();
   return (
     <input
       type="text"
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
+      placeholder={placeholder ?? t("common.search")}
       className="input-base sm:max-w-xs"
     />
   );

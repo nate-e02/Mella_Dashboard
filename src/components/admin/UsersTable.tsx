@@ -10,11 +10,13 @@ import { StatusBadge, Badge } from "@/components/ui/Badge";
 import { formatCurrency, formatDate, timeAgo } from "@/lib/format";
 import { useToast } from "@/components/ui/Toast";
 import { CreateUserModal } from "@/components/admin/CreateUserModal";
+import { formatPhone } from "@/lib/phone";
 
 type UserRow = {
   id: string;
   name: string;
-  email: string;
+  email: string | null;
+  phone: string | null;
   role: string;
   status: string;
   accountCount: number;
@@ -25,6 +27,7 @@ type UserRow = {
   kycStatus: string;
   mfaEnabled: boolean;
   emailVerified: boolean;
+  phoneVerified: boolean;
   createdAt: string;
   lastActivityAt: string | null;
 };
@@ -91,7 +94,8 @@ export function UsersTable() {
       render: (r) => (
         <div>
           <div className="font-medium">{r.name}</div>
-          <div className="text-xs text-muted">{r.email}</div>
+          <div className="text-xs text-muted">{r.email ?? "—"}</div>
+          {r.phone && <div className="text-xs text-muted">{formatPhone(r.phone)}</div>}
         </div>
       ),
     },
@@ -114,7 +118,8 @@ export function UsersTable() {
       header: "Security",
       render: (r) => (
         <div className="flex gap-1">
-          <Badge tone={r.emailVerified ? "success" : "warning"}>{r.emailVerified ? "Email ✓" : "Email ✗"}</Badge>
+          {r.email && <Badge tone={r.emailVerified ? "success" : "warning"}>{r.emailVerified ? "Email ✓" : "Email ✗"}</Badge>}
+          {r.phone && <Badge tone={r.phoneVerified ? "success" : "warning"}>{r.phoneVerified ? "Phone ✓" : "Phone ✗"}</Badge>}
           <Badge tone={r.mfaEnabled ? "success" : "muted"}>{r.mfaEnabled ? "MFA ✓" : "MFA ✗"}</Badge>
         </div>
       ),
@@ -142,7 +147,7 @@ export function UsersTable() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
         <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-center">
-          <SearchInput value={search} onChange={setSearch} placeholder="Search by name or email..." />
+          <SearchInput value={search} onChange={setSearch} placeholder="Search by name, email or phone..." />
           <FilterSelect value={role} onChange={setRole} options={ROLE_OPTIONS} />
           <FilterTabs value={status} onChange={setStatus} options={STATUS_TABS} />
         </div>

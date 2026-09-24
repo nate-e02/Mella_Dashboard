@@ -4,6 +4,7 @@ import { requireAdminPage } from "@/lib/auth/pageGuards";
 import { getUserDetail } from "@/lib/services/users";
 import { StatusBadge } from "@/components/ui/Badge";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
+import { formatPhone } from "@/lib/phone";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +27,9 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
           <StatusBadge status={user.role} />
         </div>
         <p className="text-sm text-muted">
-          {user.email} · {user.phone ?? "no phone"} · email {user.emailVerifiedAt ? "verified" : "unverified"} · MFA {user.mfaEnabled ? "on" : "off"}
+          {user.email ?? "no email"}
+          {user.email && ` (${user.emailVerifiedAt ? "verified" : "unverified"})`} · {user.phone ? formatPhone(user.phone) : "no phone"}
+          {user.phone && ` (${user.phoneVerifiedAt ? "verified" : "unverified"})`} · MFA {user.mfaEnabled ? "on" : "off"}
         </p>
       </div>
 

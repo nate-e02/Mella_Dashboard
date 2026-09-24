@@ -9,6 +9,7 @@ import { logAudit } from "@/lib/services/audit";
 import { sendEmail } from "@/lib/notify/email";
 import { appUrl } from "@/env";
 import { AuthError, ConflictError } from "@/lib/auth/guards";
+import { normalizePhone } from "@/lib/phone";
 
 const MAX_FAILED_LOGINS = 10;
 
@@ -19,22 +20,43 @@ export function mfaLabel(user: Pick<User, "id" | "email" | "phone">): string {
 const LOCKOUT_MINUTES = 15;
 
 export type LoginOutcome =
-  | { outcome: "SESSION"; user: Pick<User, "id" | "name" | "email" | "role" | "emailVerifiedAt" | "mfaEnabled"> }
+  | { outcome: "SESSION"; user: Pick<User, "id" | "name" | "email" | "phone" | "role" | "emailVerifiedAt" | "phoneVerifiedAt" | "mfaEnabled"> }
   | { outcome: "MFA_REQUIRED" }
   | { outcome: "INVALID" }
   | { outcome: "DISABLED" };
 
+/** Body returned by every login path (password, phone OTP) once a session exists. */
+export function loginResponseBody(user: Extract<LoginOutcome, { outcome: "SESSION" }>["user"]) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    role: user.role,
+    emailVerified: !!user.emailVerifiedAt,
+    phoneVerified: !!user.phoneVerifiedAt,
+    mfaEnabled: user.mfaEnabled,
+  };
+}
+
 /**
- * Password login. Constant-cost for unknown users (a dummy hash is checked),
+ * Password login by email or phone number (any format normalizePhone
+ * accepts). Constant-cost for unknown users (a dummy hash is checked),
  * locks the account for 15 minutes after 10 consecutive failures, and defers
  * to a TOTP challenge when MFA is enabled. Every attempt is audited.
  */
-export async function loginWithPassword(email: string, password: string): Promise<LoginOutcome> {
-  const user = await prisma.user.findUnique({ where: { email } });
+export async function loginWithPassword(identifier: string, password: string): Promise<LoginOutcome> {
+  const byEmail = identifier.includes("@");
+  const phone = byEmail ? null : normalizePhone(identifier);
+  const user = byEmail
+    ? await prisma.user.findUnique({ where: { email: identifier.trim().toLowerCase() } })
+    : phone
+      ? await prisma.user.findUnique({ where: { phone } })
+      : null;
 
   if (!user) {
     await burnPasswordCheck(password);
-    await logAudit({ actorId: null, action: "LOGIN_FAILED", targetType: "User", after: { reason: "unknown_email" } });
+    await logAudit({ actorId: null, action: "LOGIN_FAILED", targetType: "User", after: { reason: byEmail ? "unknown_email" : "unknown_phone" } });
     return { outcome: "INVALID" };
   }
 
@@ -73,7 +95,7 @@ export async function loginWithPassword(email: string, password: string): Promis
   }
 
   await createSession(user.id, user.role);
-  await logAudit({ actorId: user.id, action: "LOGIN_SUCCESS", targetType: "User", targetId: user.id });
+  await logAudit({ actorId: user.id, action: "LOGIN_SUCCESS", targetType: "User", targetId: user.id, after: { method: byEmail ? "password" : "phone_password" } });
   return { outcome: "SESSION", user };
 }
 
@@ -108,7 +130,7 @@ export async function completeMfaLogin(userId: string, code: string): Promise<Lo
  * already taken (an existing address gets an email instead of a 409), so the
  * endpoint cannot be used to enumerate customers.
  */
-export async function registerUser(input: { name: string; email: string; password: string; phone?: string }): Promise<{ created: boolean; userId?: string }> {
+export async function registerUser(input: { name: string; email: string; password: string; locale?: string }): Promise<{ created: boolean; userId?: string }> {
   const existing = await prisma.user.findUnique({ where: { email: input.email } });
   if (existing) {
     await sendEmail({
@@ -121,9 +143,9 @@ export async function registerUser(input: { name: string; email: string; passwor
 
   const passwordHash = await hashPassword(input.password);
   const user = await prisma.user.create({
-    data: { name: input.name, email: input.email, passwordHash, role: "TRADER", phone: input.phone ?? null },
+    data: { name: input.name, email: input.email, passwordHash, role: "TRADER", ...(input.locale ? { locale: input.locale } : {}) },
   });
-  await logAudit({ actorId: user.id, action: "USER_REGISTERED", targetType: "User", targetId: user.id });
+  await logAudit({ actorId: user.id, action: "USER_REGISTERED", targetType: "User", targetId: user.id, after: { method: "email" } });
   await sendEmailVerification(user.id);
   await createSession(user.id, user.role);
   return { created: true, userId: user.id };

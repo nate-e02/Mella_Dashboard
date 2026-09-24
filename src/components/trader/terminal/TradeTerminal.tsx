@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useToast } from "@/components/ui/Toast";
+import { useLocale, useT } from "@/i18n/client";
 import { useTradingSocket } from "@/lib/hooks/useTradingSocket";
 import type { AccountMeta } from "@/lib/services/accountState";
 import { TIMEFRAMES, channels, type AccountState, type InstrumentInfo, type PositionInfo, type ServerMessage, type Timeframe } from "@/trading/protocol";
@@ -11,7 +12,11 @@ import { InstrumentList } from "./InstrumentList";
 import { OrderTicket, type OrderDraft } from "./OrderTicket";
 import { PositionsPanel, type ClosedTodaySummary } from "./PositionsPanel";
 import { PriceChart } from "./PriceChart";
+import { RuleBanners } from "./RuleBanners";
+import { closeReasonLabel, rejectMessage } from "./messages";
+import { ruleNotices, ruleRestriction } from "./rules";
 import { formatPrice } from "./tradingMath";
+import { useClock } from "./useClock";
 
 const PREF_KEYS = { account: "mellafx:trade:account", symbol: "mellafx:trade:symbol", tf: "mellafx:trade:tf" } as const;
 const DEFAULT_TF: Timeframe = "5m";
@@ -101,6 +106,9 @@ export function TradeTerminal({
   fxRates: Record<string, number>;
 }) {
   const toast = useToast();
+  const t = useT();
+  const locale = useLocale();
+  const now = useClock();
   const socket = useTradingSocket({ enabled: accounts.length > 0 && instruments.length > 0 });
   const { status, marketState, lastTick, lowData, subscribe, unsubscribe, onMessage, request, send } = socket;
 
@@ -150,7 +158,7 @@ export function TradeTerminal({
         if (!cancelled) setStateFor({ id, state });
       })
       .catch(() => {
-        if (!cancelled) toast.push("Could not load the account state", "error");
+        if (!cancelled) toast.push(t("trading.toast.loadStateFailed"), "error");
       });
     fetchJson<ClosedTodaySummary>(`/api/trader/accounts/${id}/positions?status=CLOSED`)
       .then((summary) => {
@@ -160,7 +168,7 @@ export function TradeTerminal({
     return () => {
       cancelled = true;
     };
-  }, [hydrated, accountId, toast]);
+  }, [hydrated, accountId, toast, t]);
 
   // Channel subscriptions: market status, this account, and ticks. In low-data
   // mode only the selected symbol and open-position symbols stream.
@@ -200,6 +208,9 @@ export function TradeTerminal({
     if (status === "open" && accountId) send({ type: "account.get", accountId });
   }, [status, accountId, send]);
 
+  // Orders this page is waiting on through request(): their order.result is handled there, not below.
+  const awaitingRef = useRef<Set<string>>(new Set());
+
   // Live account/position updates.
   useEffect(() => {
     return onMessage((msg) => {
@@ -214,16 +225,25 @@ export function TradeTerminal({
           refreshClosedToday(accountId);
           if (msg.closeReason && msg.closeReason !== "MANUAL") {
             const pnl = msg.realizedPnl != null ? ` (${signedEtb(msg.realizedPnl)})` : "";
-            toast.push(`${msg.position.symbol} ${msg.position.side} closed: ${msg.closeReason.replace(/_/g, " ").toLowerCase()}${pnl}`, msg.realizedPnl != null && msg.realizedPnl < 0 ? "error" : "info");
+            toast.push(
+              t("trading.toast.autoClosed", { symbol: msg.position.symbol, side: t(msg.position.side === "BUY" ? "trading.side.BUY" : "trading.side.SELL"), reason: closeReasonLabel(t, msg.closeReason), pnl }),
+              msg.realizedPnl != null && msg.realizedPnl < 0 ? "error" : "info",
+            );
           }
         }
         return;
       }
+      // Pending orders filled or cancelled by the server (trigger, weekend rule, account closed).
+      if (msg.type === "order.result" && !awaitingRef.current.has(msg.clientOrderId)) {
+        if (msg.status === "FILLED") toast.push(t("trading.toast.pendingFilled"), "success");
+        else if (msg.status === "REJECTED") toast.push(t("trading.toast.pendingCancelled", { reason: rejectMessage(t, msg.reason) }), "info");
+        return;
+      }
       if (msg.type === "error" && !msg.ref && statusRef.current === "open") {
-        toast.push(msg.message || "Trading server error", "error");
+        toast.push(rejectMessage(t, msg.code, msg.message || t("trading.toast.serverError")), "error");
       }
     });
-  }, [onMessage, accountId, refreshClosedToday, toast]);
+  }, [onMessage, accountId, refreshClosedToday, toast, t]);
 
   // ---- actions -----------------------------------------------------------
 
@@ -231,6 +251,7 @@ export function TradeTerminal({
     async (draft: OrderDraft) => {
       if (!account) return;
       const clientOrderId = newClientOrderId();
+      awaitingRef.current.add(clientOrderId);
       try {
         const result = await request(
           {
@@ -249,23 +270,31 @@ export function TradeTerminal({
           15_000,
         );
         if (result.type === "error") {
-          toast.push(result.message || "Order rejected", "error");
+          toast.push(t("trading.toast.rejected", { reason: rejectMessage(t, result.code, result.message) }), "error");
           return;
         }
         if (result.type !== "order.result") return;
         const digits = instrumentMap.get(draft.symbol)?.digits ?? 5;
+        const side = t(draft.side === "BUY" ? "trading.side.BUY" : "trading.side.SELL");
         if (result.status === "FILLED") {
-          toast.push(`${draft.side} ${draft.volume} ${draft.symbol} filled${result.filledPrice != null ? ` at ${formatPrice(result.filledPrice, digits)}` : ""}`, "success");
+          toast.push(
+            result.filledPrice != null
+              ? t("trading.toast.filledAt", { side, volume: draft.volume, symbol: draft.symbol, price: formatPrice(result.filledPrice, digits) })
+              : t("trading.toast.filled", { side, volume: draft.volume, symbol: draft.symbol }),
+            "success",
+          );
         } else if (result.status === "PENDING") {
-          toast.push(`${draft.orderType} order placed for ${draft.symbol}`, "info");
+          toast.push(t("trading.toast.pendingPlaced", { type: t(draft.orderType === "LIMIT" ? "trading.orderType.LIMIT" : "trading.orderType.STOP"), symbol: draft.symbol }), "info");
         } else {
-          toast.push(`Order rejected: ${result.reason ?? "no reason given"}`, "error");
+          toast.push(t("trading.toast.rejected", { reason: rejectMessage(t, result.reason) }), "error");
         }
       } catch (err) {
-        toast.push(err instanceof Error ? err.message : "Order failed", "error");
+        toast.push(err instanceof Error ? err.message : t("trading.toast.orderFailed"), "error");
+      } finally {
+        awaitingRef.current.delete(clientOrderId);
       }
     },
-    [account, request, toast, instrumentMap],
+    [account, request, toast, instrumentMap, t],
   );
 
   const closePosition = useCallback(
@@ -279,17 +308,20 @@ export function TradeTerminal({
             (m.type === "error" && (m.ref === positionId || m.ref === undefined)),
           15_000,
         );
-        if (result.type === "error") toast.push(result.message || "Close failed", "error");
+        if (result.type === "error") toast.push(rejectMessage(t, result.code, result.message || t("trading.toast.closeFailed")), "error");
         else if (result.type === "position" && result.event === "CLOSED") {
-          toast.push(`${result.position.symbol} closed${result.realizedPnl != null ? ` ${signedEtb(result.realizedPnl)}` : ""}`, result.realizedPnl != null && result.realizedPnl < 0 ? "info" : "success");
+          toast.push(
+            t("trading.toast.closed", { symbol: result.position.symbol, pnl: result.realizedPnl != null ? signedEtb(result.realizedPnl) : "" }).trim(),
+            result.realizedPnl != null && result.realizedPnl < 0 ? "info" : "success",
+          );
         } else if (result.type === "position") {
-          toast.push(`${result.position.symbol} partially closed; ${result.position.volume} lots remain`, "success");
+          toast.push(t("trading.toast.partiallyClosed", { symbol: result.position.symbol, volume: result.position.volume }), "success");
         }
       } catch (err) {
-        toast.push(err instanceof Error ? err.message : "Close failed", "error");
+        toast.push(err instanceof Error ? err.message : t("trading.toast.closeFailed"), "error");
       }
     },
-    [account, request, toast],
+    [account, request, toast, t],
   );
 
   const modifyPosition = useCallback(
@@ -303,83 +335,93 @@ export function TradeTerminal({
           10_000,
         );
       } catch (err) {
-        toast.push(err instanceof Error ? err.message : "Update failed", "error");
+        toast.push(err instanceof Error ? err.message : t("trading.toast.updateFailed"), "error");
         return false;
       }
       if (result.type === "error") {
-        toast.push(result.message || "Update failed", "error");
+        toast.push(rejectMessage(t, result.code, result.message || t("trading.toast.updateFailed")), "error");
         return false;
       }
-      toast.push("Position updated", "success");
+      toast.push(t("trading.toast.positionUpdated"), "success");
       return true;
     },
-    [account, request, toast],
+    [account, request, toast, t],
+  );
+
+  const notices = useMemo(
+    () => (account && now != null ? ruleNotices(account.rules, instruments, marketState?.news, now, symbol) : []),
+    [account, instruments, marketState?.news, now, symbol],
   );
 
   if (!account || !instrument) return null;
 
   const positions = accountState?.positions ?? [];
   const actionsDisabled = status !== "open" || !account.tradable;
+  const restriction = now != null ? ruleRestriction(account.rules, instrument, marketState?.news, now) : null;
 
   return (
-    <div className="flex flex-col gap-3 lg:grid lg:grid-cols-[14rem_minmax(0,1fr)_20rem] lg:grid-rows-[auto_1fr] lg:items-start">
-      {/* Account summary: sticky at the top on phones, right rail on desktop */}
-      <div className="sticky top-[57px] z-20 lg:static lg:col-start-3 lg:row-start-1">
-        <AccountBar
-          account={account}
-          state={accountState}
-          marketState={marketState}
-          socketStatus={status}
-          lastError={socket.lastError}
-          onReconnect={socket.reconnect}
-          lowData={lowData}
-          onToggleLowData={socket.setLowData}
-        />
-      </div>
+    <div className="flex flex-col gap-3">
+      <RuleBanners notices={notices} locale={locale} />
+      <div className="flex flex-col gap-3 lg:grid lg:grid-cols-[14rem_minmax(0,1fr)_20rem] lg:grid-rows-[auto_1fr] lg:items-start">
+        {/* Account summary: sticky at the top on phones, right rail on desktop */}
+        <div className="sticky top-[57px] z-20 lg:static lg:col-start-3 lg:row-start-1">
+          <AccountBar
+            account={account}
+            state={accountState}
+            marketState={marketState}
+            socketStatus={status}
+            lastError={socket.lastError}
+            onReconnect={socket.reconnect}
+            lowData={lowData}
+            onToggleLowData={socket.setLowData}
+          />
+        </div>
 
-      <div className="lg:col-start-1 lg:row-start-1 lg:row-span-2">
-        <InstrumentList instruments={instruments} selected={symbol} onSelect={selectSymbol} lastTick={lastTick} marketState={marketState} />
-      </div>
+        <div className="lg:col-start-1 lg:row-start-1 lg:row-span-2">
+          <InstrumentList instruments={instruments} selected={symbol} onSelect={selectSymbol} lastTick={lastTick} marketState={marketState} />
+        </div>
 
-      <div className="min-w-0 lg:col-start-2 lg:row-start-1">
-        <PriceChart
-          symbol={symbol}
-          instrument={instrument}
-          timeframe={timeframe}
-          onTimeframeChange={selectTimeframe}
-          subscribe={subscribe}
-          unsubscribe={unsubscribe}
-          onMessage={onMessage}
-          socketStatus={status}
-        />
-      </div>
+        <div className="min-w-0 lg:col-start-2 lg:row-start-1">
+          <PriceChart
+            symbol={symbol}
+            instrument={instrument}
+            timeframe={timeframe}
+            onTimeframeChange={selectTimeframe}
+            subscribe={subscribe}
+            unsubscribe={unsubscribe}
+            onMessage={onMessage}
+            socketStatus={status}
+          />
+        </div>
 
-      <div className="lg:col-start-3 lg:row-start-2">
-        <OrderTicket
-          key={symbol}
-          accounts={accounts}
-          account={account}
-          onAccountChange={selectAccount}
-          instrument={instrument}
-          tick={lastTick.get(symbol)}
-          state={accountState}
-          fxRates={fxRates}
-          marketState={marketState}
-          socketStatus={status}
-          onPlaceOrder={placeOrder}
-        />
-      </div>
+        <div className="lg:col-start-3 lg:row-start-2">
+          <OrderTicket
+            key={symbol}
+            accounts={accounts}
+            account={account}
+            onAccountChange={selectAccount}
+            instrument={instrument}
+            tick={lastTick.get(symbol)}
+            state={accountState}
+            fxRates={fxRates}
+            marketState={marketState}
+            socketStatus={status}
+            restriction={restriction}
+            onPlaceOrder={placeOrder}
+          />
+        </div>
 
-      <div className="min-w-0 lg:col-start-2 lg:row-start-2">
-        <PositionsPanel
-          positions={positions}
-          instruments={instrumentMap}
-          lastTick={lastTick}
-          closedToday={closedToday}
-          disabled={actionsDisabled}
-          onClose={closePosition}
-          onModify={modifyPosition}
-        />
+        <div className="min-w-0 lg:col-start-2 lg:row-start-2">
+          <PositionsPanel
+            positions={positions}
+            instruments={instrumentMap}
+            lastTick={lastTick}
+            closedToday={closedToday}
+            disabled={actionsDisabled}
+            onClose={closePosition}
+            onModify={modifyPosition}
+          />
+        </div>
       </div>
     </div>
   );

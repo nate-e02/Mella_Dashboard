@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono, Noto_Sans_Ethiopic } from "next/font/google";
 import { I18nProvider } from "@/i18n/client";
 import { dictionaries } from "@/i18n/messages";
-import { getLocale } from "@/i18n/server";
+import { getLocale, getT } from "@/i18n/server";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -22,10 +22,10 @@ const notoEthiopic = Noto_Sans_Ethiopic({
   weight: ["400", "500", "600", "700"],
 });
 
-export const metadata: Metadata = {
-  title: "MellaFx | Prop Trading Platform",
-  description: "Ethiopian prop trading firm: trade a simulated ETB account, pass the challenge, get paid to telebirr.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getT();
+  return { title: t("common.meta.title"), description: t("common.meta.description") };
+}
 
 export default async function RootLayout({ children }: LayoutProps<"/">) {
   const locale = await getLocale();

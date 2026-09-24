@@ -2,9 +2,13 @@
 
 import { useState, type KeyboardEvent } from "react";
 import { clsx } from "clsx";
+import { useT } from "@/i18n/client";
 import type { InstrumentInfo, PositionInfo, Tick } from "@/trading/protocol";
 import { pnlClass, signedEtb } from "@/components/trader/dashboard/money";
+import { closeReasonLabel, isRuleClose } from "./messages";
 import { formatPrice, pointSize, roundToStep, stepDecimals } from "./tradingMath";
+
+const SIDE_KEYS = { BUY: "trading.side.BUY", SELL: "trading.side.SELL" } as const;
 
 export type ClosedTodaySummary = {
   since: string;
@@ -48,6 +52,7 @@ function EditableLevel({
   disabled: boolean;
   onSave: (next: number | null) => Promise<boolean>;
 }) {
+  const t = useT();
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
   const [saving, setSaving] = useState(false);
@@ -86,7 +91,7 @@ function EditableLevel({
         disabled={disabled}
         onClick={startEditing}
         className="rounded px-1 font-mono text-xs tabular-nums text-foreground underline decoration-dotted underline-offset-2 hover:bg-white/5 disabled:cursor-not-allowed disabled:no-underline"
-        aria-label={`Edit ${label}${value != null ? `, currently ${value.toFixed(digits)}` : ", not set"}`}
+        aria-label={value != null ? t("trading.positions.editLevel", { label, value: value.toFixed(digits) }) : t("trading.positions.editLevelUnset", { label })}
       >
         {value != null ? value.toFixed(digits) : "—"}
       </button>
@@ -106,10 +111,10 @@ function EditableLevel({
         onKeyDown={onKey}
         disabled={saving}
       />
-      <button type="button" className="btn-primary !px-2 !py-0.5 text-[11px]" onClick={() => void save()} disabled={saving} aria-label={`Save ${label}`}>
-        {saving ? "…" : "Save"}
+      <button type="button" className="btn-primary !px-2 !py-0.5 text-[11px]" onClick={() => void save()} disabled={saving} aria-label={t("trading.positions.saveLevel", { label })}>
+        {saving ? "…" : t("trading.positions.save")}
       </button>
-      <button type="button" className="btn-ghost !px-1.5 !py-0.5 text-[11px]" onClick={() => setEditing(false)} disabled={saving} aria-label={`Cancel editing ${label}`}>
+      <button type="button" className="btn-ghost !px-1.5 !py-0.5 text-[11px]" onClick={() => setEditing(false)} disabled={saving} aria-label={t("trading.positions.cancelEdit", { label })}>
         ✕
       </button>
     </span>
@@ -127,6 +132,7 @@ function CloseControls({
   disabled: boolean;
   onClose: CloseFn;
 }) {
+  const t = useT();
   const step = instrument?.volumeStep ?? 0.01;
   const decimals = stepDecimals(step);
   // Remounted by the parent (key includes the volume) whenever a partial close changes the size.
@@ -155,7 +161,7 @@ function CloseControls({
         min={instrument?.minVolume ?? step}
         max={position.volume}
         step={step}
-        aria-label={`Volume to close for ${position.symbol}`}
+        aria-label={t("trading.positions.closeVolume", { symbol: position.symbol })}
         className="input-base !w-20 !px-1.5 !py-0.5 font-mono text-xs"
         value={volumeText}
         onChange={(e) => setVolumeText(e.target.value)}
@@ -166,9 +172,9 @@ function CloseControls({
         className="btn-danger !px-2 !py-0.5 text-[11px]"
         onClick={() => void close()}
         disabled={disabled || busy || !valid}
-        aria-label={`${partial ? "Partially close" : "Close"} ${position.symbol} ${position.side} position`}
+        aria-label={t(partial ? "trading.positions.partialCloseAria" : "trading.positions.closeAria", { symbol: position.symbol, side: t(SIDE_KEYS[position.side]) })}
       >
-        {busy ? "…" : partial ? "Partial" : "Close"}
+        {busy ? "…" : partial ? t("trading.positions.partial") : t("trading.positions.close")}
       </button>
     </div>
   );
@@ -191,13 +197,14 @@ export function PositionsPanel({
   onClose: CloseFn;
   onModify: ModifyFn;
 }) {
+  const t = useT();
   const [tab, setTab] = useState<"open" | "closed">("open");
   const totalFloating = positions.reduce((s, p) => s + p.floatingPnl, 0);
 
   return (
     <div className="card overflow-hidden">
       <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-        <div className="flex gap-1" role="tablist" aria-label="Positions">
+        <div className="flex gap-1" role="tablist" aria-label={t("trading.positions.aria")}>
           <button
             type="button"
             role="tab"
@@ -205,7 +212,7 @@ export function PositionsPanel({
             onClick={() => setTab("open")}
             className={clsx("rounded-md px-2 py-1 text-xs font-medium", tab === "open" ? "bg-accent-2/15 text-accent-2" : "text-muted hover:text-foreground")}
           >
-            Open ({positions.length})
+            {t("trading.positions.openTab", { count: positions.length })}
           </button>
           <button
             type="button"
@@ -214,7 +221,7 @@ export function PositionsPanel({
             onClick={() => setTab("closed")}
             className={clsx("rounded-md px-2 py-1 text-xs font-medium", tab === "closed" ? "bg-accent-2/15 text-accent-2" : "text-muted hover:text-foreground")}
           >
-            Closed today{closedToday ? ` (${closedToday.count})` : ""}
+            {closedToday ? t("trading.positions.closedTabCount", { count: closedToday.count }) : t("trading.positions.closedTab")}
           </button>
         </div>
         {tab === "open" && positions.length > 0 && (
@@ -224,7 +231,7 @@ export function PositionsPanel({
 
       {tab === "open" ? (
         positions.length === 0 ? (
-          <div className="p-6 text-center text-xs text-muted">No open positions.</div>
+          <div className="p-6 text-center text-xs text-muted">{t("trading.positions.none")}</div>
         ) : (
           <>
             {/* Desktop table */}
@@ -232,15 +239,15 @@ export function PositionsPanel({
               <table className="w-full min-w-[640px] border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-border bg-surface-2 text-left text-[10px] uppercase tracking-wide text-muted">
-                    <th className="px-3 py-2">Symbol</th>
-                    <th className="px-3 py-2">Side</th>
-                    <th className="px-3 py-2 text-right">Lots</th>
-                    <th className="px-3 py-2 text-right">Entry</th>
-                    <th className="px-3 py-2 text-right">Current</th>
+                    <th className="px-3 py-2">{t("trading.col.symbol")}</th>
+                    <th className="px-3 py-2">{t("trading.col.side")}</th>
+                    <th className="px-3 py-2 text-right">{t("trading.col.lots")}</th>
+                    <th className="px-3 py-2 text-right">{t("trading.col.entry")}</th>
+                    <th className="px-3 py-2 text-right">{t("trading.col.current")}</th>
                     <th className="px-3 py-2">SL</th>
                     <th className="px-3 py-2">TP</th>
-                    <th className="px-3 py-2 text-right">Floating P&amp;L</th>
-                    <th className="px-3 py-2 text-right">Close</th>
+                    <th className="px-3 py-2 text-right">{t("trading.floatingPnl")}</th>
+                    <th className="px-3 py-2 text-right">{t("trading.positions.close")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -251,15 +258,15 @@ export function PositionsPanel({
                     return (
                       <tr key={p.id} className="border-b border-border/60 last:border-0">
                         <td className="px-3 py-2 font-semibold">{p.symbol}</td>
-                        <td className={clsx("px-3 py-2 font-medium", p.side === "BUY" ? "text-success" : "text-danger")}>{p.side}</td>
+                        <td className={clsx("px-3 py-2 font-medium", p.side === "BUY" ? "text-success" : "text-danger")}>{t(SIDE_KEYS[p.side])}</td>
                         <td className="px-3 py-2 text-right font-mono tabular-nums">{p.volume}</td>
                         <td className="px-3 py-2 text-right font-mono tabular-nums">{formatPrice(p.entryPrice, digits)}</td>
                         <td className="px-3 py-2 text-right font-mono tabular-nums">{formatPrice(current, digits)}</td>
                         <td className="px-3 py-2">
-                          <EditableLevel label={`stop loss for ${p.symbol}`} value={p.stopLoss} digits={digits} disabled={disabled} onSave={(v) => onModify(p.id, { stopLoss: v })} />
+                          <EditableLevel label={t("trading.positions.slFor", { symbol: p.symbol })} value={p.stopLoss} digits={digits} disabled={disabled} onSave={(v) => onModify(p.id, { stopLoss: v })} />
                         </td>
                         <td className="px-3 py-2">
-                          <EditableLevel label={`take profit for ${p.symbol}`} value={p.takeProfit} digits={digits} disabled={disabled} onSave={(v) => onModify(p.id, { takeProfit: v })} />
+                          <EditableLevel label={t("trading.positions.tpFor", { symbol: p.symbol })} value={p.takeProfit} digits={digits} disabled={disabled} onSave={(v) => onModify(p.id, { takeProfit: v })} />
                         </td>
                         <td className={clsx("px-3 py-2 text-right font-mono font-semibold tabular-nums", pnlClass(p.floatingPnl))}>{signedEtb(p.floatingPnl)}</td>
                         <td className="px-3 py-2">
@@ -285,23 +292,23 @@ export function PositionsPanel({
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <span className="font-semibold">{p.symbol}</span>
-                        <span className={clsx("font-medium", p.side === "BUY" ? "text-success" : "text-danger")}>{p.side}</span>
-                        <span className="font-mono text-muted">{p.volume} lots</span>
+                        <span className={clsx("font-medium", p.side === "BUY" ? "text-success" : "text-danger")}>{t(SIDE_KEYS[p.side])}</span>
+                        <span className="font-mono text-muted">{t("trading.lots", { volume: p.volume })}</span>
                       </div>
                       <span className={clsx("font-mono font-semibold tabular-nums", pnlClass(p.floatingPnl))}>{signedEtb(p.floatingPnl)}</span>
                     </div>
                     <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
-                      <span className="text-muted">Entry</span>
+                      <span className="text-muted">{t("trading.col.entry")}</span>
                       <span className="text-right font-mono tabular-nums">{formatPrice(p.entryPrice, digits)}</span>
-                      <span className="text-muted">Current</span>
+                      <span className="text-muted">{t("trading.col.current")}</span>
                       <span className="text-right font-mono tabular-nums">{formatPrice(current, digits)}</span>
-                      <span className="text-muted">Stop loss</span>
+                      <span className="text-muted">{t("trading.stopLoss")}</span>
                       <span className="text-right">
-                        <EditableLevel label={`stop loss for ${p.symbol}`} value={p.stopLoss} digits={digits} disabled={disabled} onSave={(v) => onModify(p.id, { stopLoss: v })} />
+                        <EditableLevel label={t("trading.positions.slFor", { symbol: p.symbol })} value={p.stopLoss} digits={digits} disabled={disabled} onSave={(v) => onModify(p.id, { stopLoss: v })} />
                       </span>
-                      <span className="text-muted">Take profit</span>
+                      <span className="text-muted">{t("trading.takeProfit")}</span>
                       <span className="text-right">
-                        <EditableLevel label={`take profit for ${p.symbol}`} value={p.takeProfit} digits={digits} disabled={disabled} onSave={(v) => onModify(p.id, { takeProfit: v })} />
+                        <EditableLevel label={t("trading.positions.tpFor", { symbol: p.symbol })} value={p.takeProfit} digits={digits} disabled={disabled} onSave={(v) => onModify(p.id, { takeProfit: v })} />
                       </span>
                     </div>
                     <div className="flex justify-end">
@@ -316,47 +323,51 @@ export function PositionsPanel({
       ) : (
         <div className="p-3 text-xs">
           {!closedToday ? (
-            <div className="text-muted">Loading…</div>
+            <div className="text-muted">{t("common.loading")}</div>
           ) : closedToday.count === 0 ? (
-            <div className="py-3 text-center text-muted">Nothing closed since the last daily reset.</div>
+            <div className="py-3 text-center text-muted">{t("trading.positions.noneClosed")}</div>
           ) : (
             <>
               <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1">
                 <span>
-                  <span className="text-muted">Trades </span>
+                  <span className="text-muted">{t("trading.positions.trades")} </span>
                   <span className="font-semibold tabular-nums">{closedToday.count}</span>
                 </span>
                 <span>
-                  <span className="text-muted">W/L </span>
+                  <span className="text-muted">{t("trading.positions.winLoss")} </span>
                   <span className="font-semibold tabular-nums">
                     {closedToday.wins}/{closedToday.losses}
                   </span>
                 </span>
                 <span>
-                  <span className="text-muted">Net </span>
+                  <span className="text-muted">{t("trading.positions.net")} </span>
                   <span className={clsx("font-semibold tabular-nums", pnlClass(closedToday.netPnl))}>{signedEtb(closedToday.netPnl)}</span>
                 </span>
               </div>
               <ul className="divide-y divide-border/60">
-                {closedToday.items.map((t) => {
-                  const digits = instruments.get(t.symbol)?.digits ?? 5;
+                {closedToday.items.map((tr) => {
+                  const digits = instruments.get(tr.symbol)?.digits ?? 5;
                   return (
-                    <li key={t.id} className="flex items-center justify-between gap-2 py-1.5">
+                    <li key={tr.id} className="flex items-center justify-between gap-2 py-1.5">
                       <div className="flex min-w-0 items-center gap-2">
-                        <span className="font-semibold">{t.symbol}</span>
-                        <span className={clsx("font-medium", t.side === "BUY" ? "text-success" : "text-danger")}>{t.side}</span>
-                        <span className="font-mono text-muted">{t.volume}</span>
+                        <span className="font-semibold">{tr.symbol}</span>
+                        <span className={clsx("font-medium", tr.side === "BUY" ? "text-success" : "text-danger")}>{t(SIDE_KEYS[tr.side])}</span>
+                        <span className="font-mono text-muted">{tr.volume}</span>
                         <span className="hidden font-mono text-muted sm:inline">
-                          {formatPrice(t.entryPrice, digits)} → {formatPrice(t.exitPrice, digits)}
+                          {formatPrice(tr.entryPrice, digits)} → {formatPrice(tr.exitPrice, digits)}
                         </span>
-                        {t.closeReason && t.closeReason !== "MANUAL" && <span className="rounded bg-white/5 px-1 text-[10px] uppercase text-muted">{t.closeReason.replace("_", " ")}</span>}
+                        {tr.closeReason && tr.closeReason !== "MANUAL" && (
+                          <span className={clsx("rounded px-1 text-[10px] uppercase", isRuleClose(tr.closeReason) ? "bg-warning/15 text-warning" : "bg-white/5 text-muted")}>
+                            {closeReasonLabel(t, tr.closeReason)}
+                          </span>
+                        )}
                       </div>
-                      <span className={clsx("font-mono font-semibold tabular-nums", pnlClass(t.netProfit))}>{signedEtb(t.netProfit)}</span>
+                      <span className={clsx("font-mono font-semibold tabular-nums", pnlClass(tr.netProfit))}>{signedEtb(tr.netProfit)}</span>
                     </li>
                   );
                 })}
               </ul>
-              <div className="mt-2 text-[10px] text-muted">Net of commission and swap, since the last daily reset.</div>
+              <div className="mt-2 text-[10px] text-muted">{t("trading.positions.closedFootnote")}</div>
             </>
           )}
         </div>

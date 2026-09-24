@@ -15,17 +15,23 @@ export const passwordSchema = z
 
 const emailSchema = z.string().trim().toLowerCase().email("Enter a valid email address").max(254);
 
+// A phone number is only ever attached after an SMS code proves it (see
+// /api/auth/otp and /api/account/phone), so email registration takes none.
 export const registerSchema = z.object({
   name: z.string().trim().min(2, "Name must be at least 2 characters").max(100),
   email: emailSchema,
   password: passwordSchema,
-  phone: z.string().trim().regex(/^\+?[0-9]{9,15}$/, "Enter a valid phone number").optional(),
 });
 
-export const loginSchema = z.object({
-  email: emailSchema,
-  password: z.string().min(1, "Password is required").max(72),
-});
+/** Password login by email or phone number. `email` is the pre-phone field name, still accepted. */
+export const loginSchema = z
+  .object({
+    identifier: z.string().trim().min(1).max(254).optional(),
+    email: z.string().trim().min(1).max(254).optional(),
+    password: z.string().min(1, "Password is required").max(72),
+  })
+  .refine((v) => v.identifier || v.email, { message: "Enter your email or phone number", path: ["identifier"] })
+  .transform((v) => ({ identifier: (v.identifier || v.email)!, password: v.password }));
 
 export const mfaCodeSchema = z.object({
   code: z.string().trim().min(6).max(12),
@@ -137,6 +143,8 @@ export const leadSchema = z.object({
 export const initiatePurchaseSchema = z.object({
   templateId: z.string().min(1),
   idempotencyKey: z.string().min(1).max(200).optional(),
+  // Only a code: the discount is looked up and priced server-side.
+  couponCode: z.string().trim().max(64).optional(),
 });
 
 export const accountStatusSchema = z.object({
@@ -196,3 +204,31 @@ export const supportTicketUpdateSchema = z.object({
   response: z.string().max(4000).optional(),
   priority: z.enum(["low", "normal", "high"]).optional(),
 });
+
+// ---------------------------------------------------------------------------
+// Phone (SMS OTP) login and account phone/email/password management
+// ---------------------------------------------------------------------------
+
+/** Any phone format people type; normalised (and rejected if unusable) by src/lib/phone.ts. */
+const phoneInputSchema = z.string().trim().min(6, "Enter a valid phone number").max(32, "Enter a valid phone number");
+const otpCodeSchema = z.string().trim().regex(/^\d{3}\s?\d{3}$/, "Enter the 6-digit code");
+
+export const otpRequestSchema = z.object({ phone: phoneInputSchema });
+
+export const otpVerifySchema = z.object({ phone: phoneInputSchema, code: otpCodeSchema });
+
+export const phoneSignupCompleteSchema = z.object({
+  name: z.string().trim().min(2, "Name must be at least 2 characters").max(100),
+  email: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), emailSchema.optional()),
+});
+
+export const accountOtpRequestSchema = z.discriminatedUnion("purpose", [
+  z.object({ purpose: z.literal("CHANGE_PHONE"), phone: phoneInputSchema }),
+  z.object({ purpose: z.literal("SET_PASSWORD") }),
+]);
+
+export const changePhoneSchema = z.object({ phone: phoneInputSchema, code: otpCodeSchema });
+
+export const addEmailSchema = z.object({ email: emailSchema });
+
+export const setPasswordSchema = z.object({ code: otpCodeSchema, newPassword: passwordSchema });

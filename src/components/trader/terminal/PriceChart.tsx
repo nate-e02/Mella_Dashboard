@@ -15,6 +15,7 @@ import {
   type LogicalRange,
   type UTCTimestamp,
 } from "lightweight-charts";
+import { useT } from "@/i18n/client";
 import { TIMEFRAMES, channels, type Bar, type InstrumentInfo, type ServerMessage, type Timeframe } from "@/trading/protocol";
 import type { TradingSocket } from "@/lib/hooks/useTradingSocket";
 import { bucketStartSeconds } from "./tradingMath";
@@ -66,6 +67,7 @@ export function PriceChart({
   onMessage: TradingSocket["onMessage"];
   socketStatus: TradingSocket["status"];
 }) {
+  const t = useT();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -309,7 +311,7 @@ export function PriceChart({
           {instrument && <span className="hidden truncate text-xs text-muted sm:inline">{instrument.displayName}</span>}
           {lastPrice != null && <span className="font-mono text-xs tabular-nums text-accent-2">{lastPrice.toFixed(digits)}</span>}
         </div>
-        <div className="flex items-center gap-1" role="group" aria-label="Timeframe">
+        <div className="flex items-center gap-1" role="group" aria-label={t("trading.chart.timeframe")}>
           {TIMEFRAMES.map((tf) => (
             <button
               key={tf}
@@ -328,31 +330,32 @@ export function PriceChart({
       </div>
 
       <div className="relative h-64 w-full sm:h-80 lg:h-[420px]">
-        <div ref={containerRef} className="absolute inset-0" aria-label={`${symbol} ${timeframe} candlestick chart`} role="img" />
+        <div ref={containerRef} className="absolute inset-0" aria-label={t("trading.chart.aria", { symbol, timeframe })} role="img" />
         {loading && (
           <div className="pointer-events-none absolute inset-x-0 top-2 flex justify-center">
-            <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-muted">Loading history…</span>
+            <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-muted">{t("trading.chart.loading")}</span>
           </div>
         )}
         {loadError && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4 text-center">
-            <span className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">{loadError}</span>
+            <span className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger" title={loadError}>
+              {t("trading.chart.historyError")}
+            </span>
           </div>
         )}
         {empty && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4 text-center">
             <div className="max-w-xs rounded-lg border border-border bg-surface-2/90 px-3 py-2 text-xs text-muted">
-              No price history for {symbol} yet.
-              {socketStatus === "open" ? " Candles will build from live ticks." : " Waiting for the price feed…"}
+              {t("trading.chart.empty", { symbol })} {socketStatus === "open" ? t("trading.chart.emptyLive") : t("trading.chart.emptyWaiting")}
             </div>
           </div>
         )}
       </div>
 
       <div className="flex items-center justify-between border-t border-border px-3 py-1 text-[10px] text-muted">
-        <span>{barCount > 0 ? `${barCount} bars loaded · scroll left for more` : ""}</span>
+        <span>{barCount > 0 ? t("trading.chart.barsLoaded", { count: barCount }) : ""}</span>
         <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer" className="hover:text-foreground">
-          Charts by TradingView
+          {t("trading.chart.attribution")}
         </a>
       </div>
     </div>

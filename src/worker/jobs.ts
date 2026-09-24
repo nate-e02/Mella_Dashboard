@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { runRiskSweep } from "@/lib/services/challengeEngine";
+import { importCalendarFromUrl } from "@/lib/services/newsCalendar";
 import type { Engine, EngineLogger } from "@/trading/engine";
 
 /**
@@ -13,6 +14,7 @@ export const LOCK_KEYS = {
   riskSweep: 0x4d465801,
   sessionCleanup: 0x4d465802,
   barRetention: 0x4d465803,
+  newsImport: 0x4d465804,
 } as const;
 
 export async function withAdvisoryLock<T>(key: number, timeoutMs: number, fn: () => Promise<T>): Promise<{ ran: true; result: T } | { ran: false }> {
@@ -53,7 +55,9 @@ export function startJobs(deps: { engine: Engine; log: EngineLogger; barRetentio
     const now = new Date();
     const weekAgo = new Date(now.getTime() - 7 * 86_400_000);
     const res = await prisma.session.deleteMany({ where: { OR: [{ expiresAt: { lt: now } }, { revokedAt: { not: null, lt: weekAgo } }] } });
-    return { deleted: res.count };
+    // SMS codes live 5 minutes; keep a day of them for the hourly send cap and support questions.
+    const otps = await prisma.phoneOtp.deleteMany({ where: { expiresAt: { lt: new Date(now.getTime() - 86_400_000) } } });
+    return { deleted: res.count, phoneOtpsDeleted: otps.count };
   });
   const bars = guard("bar-retention", LOCK_KEYS.barRetention, 30 * 60_000, async () => {
     const cutoff = new Date(Date.now() - retentionDays * 86_400_000);
@@ -67,6 +71,18 @@ export function startJobs(deps: { engine: Engine; log: EngineLogger; barRetentio
   timers.push(setInterval(() => void sessions(), 60 * 60_000));
   timers.push(setTimeout(() => void bars(), 60_000));
   timers.push(setInterval(() => void bars(), 24 * 60 * 60_000));
+
+  // Economic calendar import (news-trading rule): off unless NEWS_CALENDAR_URL is set.
+  const calendarUrl = process.env.NEWS_CALENDAR_URL?.trim();
+  if (calendarUrl) {
+    const news = guard("news-import", LOCK_KEYS.newsImport, 2 * 60_000, async () => {
+      const result = await importCalendarFromUrl(calendarUrl);
+      await engine.reloadNewsEvents();
+      return result;
+    });
+    timers.push(setTimeout(() => void news(), 90_000));
+    timers.push(setInterval(() => void news(), 6 * 60 * 60_000));
+  }
 
   return {
     stop() {

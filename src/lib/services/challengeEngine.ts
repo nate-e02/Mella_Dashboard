@@ -1,14 +1,15 @@
 import "server-only";
 import { Prisma, type AccountStatus, type TradingAccount } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { aggregateTrades, sumOpenPositionFloating } from "@/lib/services/accountMetrics";
-import { determineChallengeTransition, isLegalManualTransition, type FailureReason } from "@/lib/services/challengeRules";
+import { aggregateTrades, dailyNetProfits, sumOpenPositionFloating } from "@/lib/services/accountMetrics";
+import { consistencyCheck, determineChallengeTransition, isLegalManualTransition, type FailureReason } from "@/lib/services/challengeRules";
 import { roundCurrency } from "@/lib/services/calculations";
 import { currentDayStart, needsDailyReset, parseResetTime } from "@/lib/services/dailyReset";
 import type { TemplateSnapshot } from "@/types";
 import { logAudit } from "@/lib/services/audit";
 import { notifyUser } from "@/lib/services/notifications";
 import { ConflictError } from "@/lib/auth/guards";
+import { issueCertificate } from "@/lib/services/certificates";
 
 /** True if `err` is a Prisma unique-constraint violation on the given field. */
 function isUniqueConstraintOn(err: unknown, field: string): boolean {
@@ -112,6 +113,13 @@ export async function evaluateAccount(accountId: string, actorId?: string, opts:
   const expiresAt = account.expiresAt ?? (snapshot.durationDays ? new Date(account.createdAt.getTime() + snapshot.durationDays * 86_400_000) : null);
   const expired = expiresAt != null && expiresAt.getTime() < now.getTime();
 
+  // Consistency only matters (and is only queried) once the target is reached.
+  const targetAmount = snapshot.profitTarget != null && snapshot.profitTarget > 0 ? roundCurrency(account.startingBalance * (snapshot.profitTarget / 100)) : null;
+  const consistency =
+    needsTradingDays && snapshot.consistencyRequirement != null && snapshot.consistencyRequirement > 0 && targetAmount != null && roundCurrency(account.realizedPnl) >= targetAmount
+      ? consistencyCheck({ dailyNetProfits: await dailyNetProfits(accountId, resetTime), limitPercent: snapshot.consistencyRequirement })
+      : null;
+
   const previousStatus = account.status;
   const decision = determineChallengeTransition({
     status: previousStatus,
@@ -123,6 +131,7 @@ export async function evaluateAccount(accountId: string, actorId?: string, opts:
     dailyAnchorBalance,
     tradingDays,
     expired,
+    consistency,
     snapshot: {
       maxDrawdown: snapshot.maxDrawdown,
       dailyDrawdown: snapshot.dailyDrawdown,
@@ -180,6 +189,7 @@ export async function evaluateAccount(accountId: string, actorId?: string, opts:
     );
 
     if (status === "PASSED") {
+      await issueCertificate(tx, { type: "CHALLENGE_PASSED", userId: account.userId, accountId });
       await advanceToNextPhase(tx, { id: accountId, userId: account.userId, snapshot }, now);
     }
   });
@@ -267,6 +277,9 @@ async function advanceToNextPhase(
       },
       tx,
     );
+    if (created.status === "FUNDED") {
+      await issueCertificate(tx, { type: "FUNDED", userId: account.userId, accountId: created.id });
+    }
   } catch (err) {
     if (isUniqueConstraintOn(err, "previousAccountId")) return;
     throw err;

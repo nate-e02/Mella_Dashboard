@@ -2,11 +2,14 @@
 
 import { useMemo, useState, type FormEvent } from "react";
 import { clsx } from "clsx";
+import { useT } from "@/i18n/client";
 import { formatCurrency } from "@/lib/format";
 import type { AccountMeta } from "@/lib/services/accountState";
 import type { MarketStatus, SocketStatus } from "@/lib/hooks/useTradingSocket";
 import type { AccountState, InstrumentInfo, OrderKind, Side, Tick } from "@/trading/protocol";
 import { etb } from "@/components/trader/dashboard/money";
+import { eatTime, phaseLabel, rejectMessage } from "./messages";
+import type { RuleRestriction } from "./rules";
 import {
   clampVolume,
   estimateCommission,
@@ -34,6 +37,7 @@ export type OrderDraft = {
 };
 
 const ORDER_TYPES: OrderKind[] = ["MARKET", "LIMIT", "STOP"];
+const ORDER_TYPE_KEYS = { MARKET: "trading.orderType.MARKET", LIMIT: "trading.orderType.LIMIT", STOP: "trading.orderType.STOP" } as const;
 
 export function OrderTicket({
   accounts,
@@ -45,6 +49,7 @@ export function OrderTicket({
   fxRates,
   marketState,
   socketStatus,
+  restriction,
   onPlaceOrder,
 }: {
   accounts: AccountMeta[];
@@ -56,8 +61,11 @@ export function OrderTicket({
   fxRates: Record<string, number>;
   marketState: MarketStatus | null;
   socketStatus: SocketStatus;
+  /** A challenge rule (weekend, rollover, news window) that currently blocks new orders on this instrument. */
+  restriction: RuleRestriction | null;
   onPlaceOrder: (draft: OrderDraft) => Promise<void>;
 }) {
+  const t = useT();
   const [side, setSide] = useState<Side>("BUY");
   const [orderType, setOrderType] = useState<OrderKind>("MARKET");
   // The parent remounts the ticket (key=symbol) when the instrument changes, so the initial volume is per-instrument.
@@ -82,15 +90,15 @@ export function OrderTicket({
   const referencePrice = orderType === "MARKET" ? (bid != null && ask != null ? marketFillPrice(side, bid, ask) : null) : price;
 
   const volumeError = useMemo(() => {
-    if (!instrument) return "No instrument selected";
-    if (volume == null || Number.isNaN(volume) || volume <= 0) return "Enter a volume";
-    if (volume < instrument.minVolume) return `Minimum ${instrument.minVolume} lots`;
-    if (volume > instrument.maxVolume) return `Maximum ${instrument.maxVolume} lots`;
-    if (Math.abs(roundToStep(volume, instrument.volumeStep) - volume) > 1e-9) return `Volume step is ${instrument.volumeStep}`;
+    if (!instrument) return t("trading.ticket.noInstrument");
+    if (volume == null || Number.isNaN(volume) || volume <= 0) return t("trading.ticket.enterVolume");
+    if (volume < instrument.minVolume) return t("trading.ticket.minVolume", { min: instrument.minVolume });
+    if (volume > instrument.maxVolume) return t("trading.ticket.maxVolume", { max: instrument.maxVolume });
+    if (Math.abs(roundToStep(volume, instrument.volumeStep) - volume) > 1e-9) return t("trading.ticket.volumeStep", { step: instrument.volumeStep });
     return null;
-  }, [instrument, volume]);
+  }, [instrument, volume, t]);
 
-  const priceError = validatePendingPrice({ orderType, side, price: Number.isNaN(price) ? Number.NaN : price, bid, ask });
+  const priceErrorKey = validatePendingPrice({ orderType, side, price: Number.isNaN(price) ? Number.NaN : price, bid, ask });
   const levels = validateProtectiveLevels({
     side,
     entry: referencePrice != null && !Number.isNaN(referencePrice) ? referencePrice : null,
@@ -102,19 +110,33 @@ export function OrderTicket({
   const offline = socketStatus !== "open";
   const noQuote = orderType === "MARKET" && (bid == null || ask == null);
 
+  const priceError = priceErrorKey ? t(priceErrorKey) : null;
+  const stopLossError = levels.stopLoss ? t(levels.stopLoss) : null;
+  const takeProfitError = levels.takeProfit ? t(levels.takeProfit) : null;
+
+  const ruleBlock = restriction
+    ? restriction.code === "NEWS_WINDOW"
+      ? t("trading.ticket.blockNews", { currency: restriction.event.currency, until: eatTime(restriction.until) })
+      : `${rejectMessage(t, restriction.code)} (${t("trading.ticket.until", { time: eatTime(restriction.until) })})`
+    : null;
+
   const blockReason = offline
     ? socketStatus === "connecting"
-      ? "Connecting to the trading server…"
-      : "Not connected to the trading server"
+      ? t("trading.ticket.connecting")
+      : t("trading.ticket.disconnected")
     : halted
-      ? `Market halted${marketState?.reason ? `: ${marketState.reason}` : ""}`
+      ? marketState?.reason
+        ? t("trading.ticket.haltedReason", { reason: marketState.reason })
+        : t("trading.ticket.halted")
       : !account.tradable
-        ? `Account is ${account.status.toLowerCase()}; trading is disabled`
-        : noQuote
-          ? "Waiting for a price…"
-          : null;
+        ? t("trading.ticket.notTradable")
+        : ruleBlock
+          ? ruleBlock
+          : noQuote
+            ? t("trading.ticket.waitingPrice")
+            : null;
 
-  const validationError = volumeError ?? priceError ?? levels.stopLoss ?? levels.takeProfit;
+  const validationError = volumeError ?? priceError ?? stopLossError ?? takeProfitError;
   const canSubmit = !submitting && !blockReason && !validationError && Boolean(instrument);
 
   // Estimates in the account currency when a conversion rate is known, otherwise in the quote currency.
@@ -159,23 +181,23 @@ export function OrderTicket({
   const pricePlaceholder = referencePrice != null && orderType === "MARKET" ? formatPrice(referencePrice, digits) : "0." + "0".repeat(digits);
 
   return (
-    <form className="card flex flex-col gap-3 p-3" onSubmit={handleSubmit} aria-label="Order ticket">
+    <form className="card flex flex-col gap-3 p-3" onSubmit={handleSubmit} aria-label={t("trading.ticket.aria")}>
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold">New order</h2>
+        <h2 className="text-sm font-semibold">{t("trading.ticket.title")}</h2>
         <label className="sr-only" htmlFor="ticket-account">
-          Trading account
+          {t("trading.ticket.account")}
         </label>
         <select id="ticket-account" className="input-base !w-auto max-w-[60%] !py-1 text-xs" value={account.id} onChange={(e) => onAccountChange(e.target.value)}>
           {accounts.map((a) => (
             <option key={a.id} value={a.id}>
-              {a.name} · {a.phase.replace("_", " ")}
+              {a.name} · {phaseLabel(t, a.phase)}
             </option>
           ))}
         </select>
       </div>
 
       {/* Side toggles with live prices */}
-      <div className="grid grid-cols-2 gap-2" role="group" aria-label="Order side">
+      <div className="grid grid-cols-2 gap-2" role="group" aria-label={t("trading.ticket.side")}>
         <button
           type="button"
           aria-pressed={side === "SELL"}
@@ -185,7 +207,7 @@ export function OrderTicket({
             side === "SELL" ? "border-danger/60 bg-danger/20 text-danger" : "border-border bg-surface-2 text-muted hover:text-foreground",
           )}
         >
-          <span className="text-[11px] font-medium uppercase tracking-wide">Sell</span>
+          <span className="text-[11px] font-medium uppercase tracking-wide">{t("trading.ticket.sell")}</span>
           <span className="font-mono text-sm tabular-nums">{formatPrice(bid, digits)}</span>
         </button>
         <button
@@ -197,23 +219,23 @@ export function OrderTicket({
             side === "BUY" ? "border-success/60 bg-success/20 text-success" : "border-border bg-surface-2 text-muted hover:text-foreground",
           )}
         >
-          <span className="text-[11px] font-medium uppercase tracking-wide">Buy</span>
+          <span className="text-[11px] font-medium uppercase tracking-wide">{t("trading.ticket.buy")}</span>
           <span className="font-mono text-sm tabular-nums">{formatPrice(ask, digits)}</span>
         </button>
       </div>
-      <div className="-mt-1 text-center text-[11px] text-muted">{spread != null ? `Spread ${spread} pts` : "No quote yet"}</div>
+      <div className="-mt-1 text-center text-[11px] text-muted">{spread != null ? t("trading.ticket.spread", { points: spread }) : t("trading.ticket.noQuote")}</div>
 
       {/* Order type */}
-      <div className="grid grid-cols-3 gap-1 rounded-lg bg-surface-2 p-1" role="group" aria-label="Order type">
-        {ORDER_TYPES.map((t) => (
+      <div className="grid grid-cols-3 gap-1 rounded-lg bg-surface-2 p-1" role="group" aria-label={t("trading.ticket.orderType")}>
+        {ORDER_TYPES.map((k) => (
           <button
-            key={t}
+            key={k}
             type="button"
-            aria-pressed={orderType === t}
-            onClick={() => setOrderType(t)}
-            className={clsx("rounded-md py-1 text-[11px] font-medium", orderType === t ? "bg-accent-2/20 text-accent-2" : "text-muted hover:text-foreground")}
+            aria-pressed={orderType === k}
+            onClick={() => setOrderType(k)}
+            className={clsx("rounded-md py-1 text-[11px] font-medium", orderType === k ? "bg-accent-2/20 text-accent-2" : "text-muted hover:text-foreground")}
           >
-            {t.charAt(0) + t.slice(1).toLowerCase()}
+            {t(ORDER_TYPE_KEYS[k])}
           </button>
         ))}
       </div>
@@ -221,10 +243,10 @@ export function OrderTicket({
       {/* Volume */}
       <div>
         <label htmlFor="ticket-volume" className="mb-1 block text-xs text-muted">
-          Volume (lots)
+          {t("trading.ticket.volume")}
         </label>
         <div className="flex items-stretch gap-1">
-          <button type="button" className="btn-secondary !px-3 !py-1" onClick={() => bumpVolume(-1)} aria-label="Decrease volume">
+          <button type="button" className="btn-secondary !px-3 !py-1" onClick={() => bumpVolume(-1)} aria-label={t("trading.ticket.decrease")}>
             −
           </button>
           <input
@@ -243,19 +265,19 @@ export function OrderTicket({
             aria-invalid={Boolean(volumeError)}
             aria-describedby="ticket-volume-help"
           />
-          <button type="button" className="btn-secondary !px-3 !py-1" onClick={() => bumpVolume(1)} aria-label="Increase volume">
+          <button type="button" className="btn-secondary !px-3 !py-1" onClick={() => bumpVolume(1)} aria-label={t("trading.ticket.increase")}>
             +
           </button>
         </div>
         <div id="ticket-volume-help" className={clsx("mt-1 text-[11px]", volumeError ? "text-danger" : "text-muted")}>
-          {volumeError ?? (instrument ? `${instrument.minVolume} – ${instrument.maxVolume} lots, step ${instrument.volumeStep}` : "")}
+          {volumeError ?? (instrument ? t("trading.ticket.volumeHelp", { min: instrument.minVolume, max: instrument.maxVolume, step: instrument.volumeStep }) : "")}
         </div>
       </div>
 
       {orderType !== "MARKET" && (
         <div>
           <label htmlFor="ticket-price" className="mb-1 block text-xs text-muted">
-            {orderType === "LIMIT" ? "Limit price" : "Stop price"}
+            {orderType === "LIMIT" ? t("trading.ticket.limitPrice") : t("trading.ticket.stopPrice")}
           </label>
           <input
             id="ticket-price"
@@ -275,7 +297,7 @@ export function OrderTicket({
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label htmlFor="ticket-sl" className="mb-1 block text-xs text-muted">
-            Stop loss
+            {t("trading.stopLoss")}
           </label>
           <input
             id="ticket-sl"
@@ -284,15 +306,15 @@ export function OrderTicket({
             className="input-base font-mono"
             value={slText}
             step={pointSize(digits)}
-            placeholder="optional"
+            placeholder={t("trading.ticket.optional")}
             onChange={(e) => setSlText(e.target.value)}
-            aria-invalid={Boolean(levels.stopLoss)}
+            aria-invalid={Boolean(stopLossError)}
           />
-          {levels.stopLoss && <div className="mt-1 text-[11px] text-danger">{levels.stopLoss}</div>}
+          {stopLossError && <div className="mt-1 text-[11px] text-danger">{stopLossError}</div>}
         </div>
         <div>
           <label htmlFor="ticket-tp" className="mb-1 block text-xs text-muted">
-            Take profit
+            {t("trading.takeProfit")}
           </label>
           <input
             id="ticket-tp"
@@ -301,28 +323,28 @@ export function OrderTicket({
             className="input-base font-mono"
             value={tpText}
             step={pointSize(digits)}
-            placeholder="optional"
+            placeholder={t("trading.ticket.optional")}
             onChange={(e) => setTpText(e.target.value)}
-            aria-invalid={Boolean(levels.takeProfit)}
+            aria-invalid={Boolean(takeProfitError)}
           />
-          {levels.takeProfit && <div className="mt-1 text-[11px] text-danger">{levels.takeProfit}</div>}
+          {takeProfitError && <div className="mt-1 text-[11px] text-danger">{takeProfitError}</div>}
         </div>
       </div>
 
       {/* Estimates */}
       <dl className="grid grid-cols-2 gap-x-3 gap-y-1 rounded-lg bg-surface-2 p-2 text-[11px]">
-        <dt className="text-muted">Est. margin</dt>
+        <dt className="text-muted">{t("trading.ticket.estMargin")}</dt>
         <dd className={clsx("text-right font-medium tabular-nums", marginTooHigh && "text-danger")}>
           {marginEstimate != null ? formatCurrency(marginEstimate, estCurrency) : "—"}
         </dd>
-        <dt className="text-muted">Pip value</dt>
+        <dt className="text-muted">{t("trading.ticket.pipValue")}</dt>
         <dd className="text-right font-medium tabular-nums">{pipEstimate != null ? formatCurrency(pipEstimate, estCurrency) : "—"}</dd>
-        <dt className="text-muted">Commission</dt>
+        <dt className="text-muted">{t("trading.ticket.commission")}</dt>
         <dd className="text-right font-medium tabular-nums">{commissionEstimate != null ? etb(commissionEstimate) : "—"}</dd>
-        <dt className="text-muted">Free margin</dt>
+        <dt className="text-muted">{t("trading.freeMargin")}</dt>
         <dd className="text-right font-medium tabular-nums">{freeMargin != null ? etb(freeMargin) : "—"}</dd>
-        {rate == null && quote !== "ETB" && <dd className="col-span-2 text-[10px] text-muted">Estimates shown in {quote}; no ETB rate available yet.</dd>}
-        {marginTooHigh && <dd className="col-span-2 text-[10px] text-danger">Estimated margin exceeds free margin.</dd>}
+        {rate == null && quote !== "ETB" && <dd className="col-span-2 text-[10px] text-muted">{t("trading.ticket.estimatesIn", { currency: quote })}</dd>}
+        {marginTooHigh && <dd className="col-span-2 text-[10px] text-danger">{t("trading.ticket.marginTooHigh")}</dd>}
       </dl>
 
       <button
@@ -333,15 +355,17 @@ export function OrderTicket({
           side === "BUY" ? "bg-success hover:brightness-110" : "bg-danger hover:brightness-110",
         )}
       >
-        {submitting ? "Sending…" : `${side === "BUY" ? "Buy" : "Sell"} ${safeVolume > 0 ? safeVolume.toFixed(volDecimals) : ""} ${symbol}`.trim()}
-        {orderType !== "MARKET" ? ` (${orderType.toLowerCase()})` : ""}
+        {submitting
+          ? t("trading.ticket.sending")
+          : `${side === "BUY" ? t("trading.ticket.buy") : t("trading.ticket.sell")} ${safeVolume > 0 ? safeVolume.toFixed(volDecimals) : ""} ${symbol}`.replace(/\s+/g, " ").trim()}
+        {orderType !== "MARKET" ? ` (${t(ORDER_TYPE_KEYS[orderType])})` : ""}
       </button>
       {blockReason && (
         <div className="text-center text-[11px] text-warning" role="status">
           {blockReason}
         </div>
       )}
-      <div className="text-center text-[10px] text-muted">Press Enter to submit. Fills happen at the server price; estimates are indicative.</div>
+      <div className="text-center text-[10px] text-muted">{t("trading.ticket.footer")}</div>
     </form>
   );
 }

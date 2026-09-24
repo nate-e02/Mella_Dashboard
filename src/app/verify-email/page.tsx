@@ -3,8 +3,11 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { useT } from "@/i18n/client";
+import { AuthShell, FormAlert } from "@/components/shared/AuthShell";
 
 function VerifyEmail() {
+  const t = useT();
   const params = useSearchParams();
   const token = params.get("token") ?? "";
   const [state, setState] = useState<"verifying" | "ok" | "error">("verifying");
@@ -22,34 +25,32 @@ function VerifyEmail() {
       .catch(() => setState("error"));
   }, [token]);
 
-  if (!token) return <p className="text-sm text-danger">This verification link is missing its token.</p>;
-  if (state === "verifying") return <p className="text-sm text-muted">Verifying your email…</p>;
+  if (!token) return <p className="text-sm text-danger">{t("auth.verifyEmail.missingToken")}</p>;
+  if (state === "verifying") return <p className="text-sm text-muted">{t("auth.verifyEmail.verifying")}</p>;
   if (state === "ok")
     return (
-      <div className="rounded-lg bg-success/10 px-3 py-2 text-sm text-success">
-        Your email is verified. You can now purchase challenges.{" "}
+      <FormAlert tone="success">
+        {t("auth.verifyEmail.ok")}{" "}
         <Link href="/dashboard" className="underline">
-          Go to your dashboard
+          {t("auth.verifyEmail.goDashboard")}
         </Link>
-        .
-      </div>
+      </FormAlert>
     );
-  return (
-    <div className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">
-      This link is invalid or has expired. Log in and request a new verification email from your Account page.
-    </div>
-  );
+  return <FormAlert>{t("auth.verifyEmail.error")}</FormAlert>;
+}
+
+function Loading() {
+  const t = useT();
+  return <div className="text-sm text-muted">{t("common.loading")}</div>;
 }
 
 export default function VerifyEmailPage() {
+  const t = useT();
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <div className="card w-full max-w-sm p-6">
-        <h1 className="mb-3 text-xl font-semibold">Email verification</h1>
-        <Suspense fallback={<div className="text-sm text-muted">Loading…</div>}>
-          <VerifyEmail />
-        </Suspense>
-      </div>
-    </div>
+    <AuthShell title={t("auth.verifyEmail.title")}>
+      <Suspense fallback={<Loading />}>
+        <VerifyEmail />
+      </Suspense>
+    </AuthShell>
   );
 }

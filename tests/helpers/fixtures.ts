@@ -37,6 +37,11 @@ export class TestFixtures {
     return user as typeof user & { email: string; passwordHash: string };
   }
 
+  /** Registers a user created by the code under test (e.g. a sign-up flow) for cleanup. */
+  trackUser(userId: string) {
+    this.userIds.push(userId);
+  }
+
   async createTemplate(overrides: Partial<Parameters<typeof prisma.template.create>[0]["data"]> = {}) {
     const suffix = uniqueSuffix();
     const template = await prisma.template.create({

@@ -2,12 +2,21 @@ import http from "node:http";
 import { prisma } from "@/lib/prisma";
 import type { Engine, EngineLogger } from "./engine";
 import type { FeedHealth } from "./feeds/types";
+import type { FeedSwitchEvent, FeedSymbolState } from "./feeds/router";
 import { FEED_STALE_MS } from "@/trading/protocol";
 
 /**
  * Internal HTTP server: health for the load balancer, status/kill switch
  * for the admin UI (guarded by x-internal-token).
  */
+
+export type FeedRouterStatus = {
+  staleMs: number;
+  stableMs: number;
+  symbols: Record<string, FeedSymbolState>;
+  switches: FeedSwitchEvent[];
+  paused: string[];
+};
 
 export type HttpDeps = {
   engine: Engine;
@@ -16,6 +25,12 @@ export type HttpDeps = {
   log: EngineLogger;
   internalToken?: string;
   startedAt: number;
+  /** Primary/backup routing state per symbol. */
+  feedRouter?: () => FeedRouterStatus;
+  /** Failover drill (pause a provider's ticks). Absent in production. */
+  feedControl?: { setPaused: (source: string, paused: boolean) => boolean };
+  /** Reload instruments and resync feed subscriptions now (instead of within 60 s). */
+  reloadInstruments?: () => Promise<unknown>;
 };
 
 async function dbReachable(timeoutMs = 3_000): Promise<boolean> {
@@ -82,15 +97,35 @@ export function createHttpServer(deps: HttpDeps): http.Server {
       if (req.method === "GET" && url.pathname === "/status") {
         const now = Date.now();
         const feeds = deps.feeds();
-        const symbols: Record<string, { source: string; lastTickAt: number | null; stale: boolean }> = {};
-        for (const [source, h] of Object.entries(feeds)) {
-          for (const [symbol, s] of Object.entries(h.symbols)) {
-            symbols[symbol] = { source, lastTickAt: s.lastTickAt, stale: s.lastTickAt == null || now - s.lastTickAt > FEED_STALE_MS };
+        const routing = deps.feedRouter?.() ?? null;
+        // `source` is the source currently feeding the engine (the backup during a failover).
+        const symbols: Record<string, { source: string; lastTickAt: number | null; stale: boolean; primary?: string; backup?: string | null; onBackup?: boolean; primaryLastTickAt?: number | null; backupLastTickAt?: number | null; activeSince?: number }> = {};
+        if (routing) {
+          for (const [symbol, r] of Object.entries(routing.symbols)) {
+            const lastTickAt = r.onBackup ? r.backupLastTickAt : r.primaryLastTickAt;
+            symbols[symbol] = {
+              source: r.active,
+              lastTickAt,
+              stale: lastTickAt == null || now - lastTickAt > FEED_STALE_MS,
+              primary: r.primary,
+              backup: r.backup,
+              onBackup: r.onBackup,
+              primaryLastTickAt: r.primaryLastTickAt,
+              backupLastTickAt: r.backupLastTickAt,
+              activeSince: r.activeSince,
+            };
+          }
+        } else {
+          for (const [source, h] of Object.entries(feeds)) {
+            for (const [symbol, s] of Object.entries(h.symbols)) {
+              symbols[symbol] = { source, lastTickAt: s.lastTickAt, stale: s.lastTickAt == null || now - s.lastTickAt > FEED_STALE_MS };
+            }
           }
         }
         json(res, 200, {
-          feeds: Object.fromEntries(Object.entries(feeds).map(([name, h]) => [name, { connected: h.connected, lastTickAt: h.lastTickAt }])),
+          feeds: Object.fromEntries(Object.entries(feeds).map(([name, h]) => [name, { connected: h.connected, lastTickAt: h.lastTickAt, paused: routing?.paused.includes(name) ?? false }])),
           symbols,
+          failover: routing ? { staleMs: routing.staleMs, stableMs: routing.stableMs, switches: routing.switches.slice(0, 20) } : null,
           connections: deps.connections(),
           engine: deps.engine.status(),
           uptime: Math.round((now - deps.startedAt) / 1000),
@@ -117,6 +152,37 @@ export function createHttpServer(deps: HttpDeps): http.Server {
         await deps.engine.setManualHalt(halt, reason);
         deps.log.warn({ halt, reason }, "http: manual kill switch changed");
         json(res, 200, { halted: halt, marketState: deps.engine.marketStatus() });
+        return;
+      }
+
+      const feedDrill = req.method === "POST" ? url.pathname.match(/^\/internal\/feeds\/([A-Za-z0-9_-]{1,32})\/(pause|resume)$/) : null;
+      if (feedDrill) {
+        if (!deps.feedControl) {
+          json(res, 404, { error: "feed pause/resume is disabled in production" });
+          return;
+        }
+        const ok = deps.feedControl.setPaused(feedDrill[1], feedDrill[2] === "pause");
+        if (!ok) {
+          json(res, 404, { error: `no running provider ${feedDrill[1].toUpperCase()}` });
+          return;
+        }
+        json(res, 200, { source: feedDrill[1].toUpperCase(), paused: feedDrill[2] === "pause", routing: deps.feedRouter?.().paused ?? [] });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/internal/reload-instruments") {
+        if (!deps.reloadInstruments) {
+          json(res, 404, { error: "not supported" });
+          return;
+        }
+        await deps.reloadInstruments();
+        json(res, 200, { ok: true, instruments: deps.engine.instruments.size });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/internal/reload-news") {
+        await deps.engine.reloadNewsEvents();
+        json(res, 200, { ok: true, news: deps.engine.status().news });
         return;
       }
 

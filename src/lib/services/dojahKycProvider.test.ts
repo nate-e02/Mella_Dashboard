@@ -44,12 +44,12 @@ describe("dojahKycProvider.verifyWebhookSignature", () => {
     expect(dojahKycProvider.verifyWebhookSignature(tamperedBody, headersFrom({ "x-dojah-signature": sig }))).toBe(false);
   });
 
-  it("accepts a valid x-dojah-signature-v2 (HMAC-SHA256 of the secret key itself) when the body signature is absent", async () => {
+  it("rejects the body-independent x-dojah-signature-v2 variant (constant, replayable) even when correctly computed", async () => {
     const { dojahKycProvider } = await import("@/lib/services/dojahKycProvider");
     const rawBody = JSON.stringify({ reference_id: "ref-1" });
     const keySig = createHmac("sha256", SECRET).update(SECRET).digest("hex");
 
-    expect(dojahKycProvider.verifyWebhookSignature(rawBody, headersFrom({ "x-dojah-signature-v2": keySig }))).toBe(true);
+    expect(dojahKycProvider.verifyWebhookSignature(rawBody, headersFrom({ "x-dojah-signature-v2": keySig }))).toBe(false);
   });
 
   it("rejects when neither signature header is present", async () => {

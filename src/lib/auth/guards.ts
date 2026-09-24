@@ -2,25 +2,10 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { getSessionUser, type SessionUser } from "@/lib/auth/session";
+import { devOverridesEnabled } from "@/env";
+import { AuthError, ConflictError } from "@/lib/errors";
 
-export class AuthError extends Error {
-  status: number;
-  constructor(message: string, status = 401) {
-    super(message);
-    this.status = status;
-  }
-}
-
-/**
- * A well-formed request that cannot be completed because of the current
- * state of the resource (e.g. refunding a purchase that isn't PAID, deciding
- * a payout that isn't PENDING). Distinct from validation errors (malformed
- * input) and from AuthError (who is allowed to act) - this is about whether
- * the requested state transition is currently legal.
- */
-export class ConflictError extends Error {
-  status = 409;
-}
+export { AuthError, ConflictError };
 
 /** Throws AuthError if there is no authenticated, active user. */
 export async function requireUser(): Promise<SessionUser> {
@@ -29,10 +14,19 @@ export async function requireUser(): Promise<SessionUser> {
   return user;
 }
 
-/** Throws AuthError if the authenticated user is not an ADMIN. */
+/** True when admins must have TOTP enabled to use admin functions. Always on in production. */
+export function adminMfaRequired(): boolean {
+  if (process.env.ADMIN_MFA_REQUIRED === "false") return false;
+  return process.env.NODE_ENV === "production" || process.env.ADMIN_MFA_REQUIRED === "true";
+}
+
+/** Throws AuthError if the authenticated user is not an ADMIN (with MFA where required). */
 export async function requireAdmin(): Promise<SessionUser> {
   const user = await requireUser();
   if (user.role !== "ADMIN") throw new AuthError("Forbidden", 403);
+  if (adminMfaRequired() && !user.mfaEnabled) {
+    throw new AuthError("Multi-factor authentication must be enabled for admin access", 403, "MFA_REQUIRED");
+  }
   return user;
 }
 
@@ -44,29 +38,41 @@ export async function requireTrader(): Promise<SessionUser> {
 }
 
 /**
- * Wraps a route handler body, converting known error shapes into safe JSON
- * responses with appropriate status codes. Never forwards a raw error
- * message for errors we don't recognize - only our own typed errors
- * (AuthError, ConflictError, Zod validation issues) or a small allowlist of
- * Prisma error codes get a specific, still-generic message; everything else
- * is logged server-side and returned as an opaque 500 so stack traces,
- * database internals, and other implementation details never reach a
- * client.
+ * Development-only actions (KYC override, mark-paid, simulated trades) are
+ * hidden with a 404 unless ENABLE_DEV_OVERRIDES=true outside production.
  */
-export async function withApiErrorHandling(
-  fn: () => Promise<NextResponse>,
-): Promise<NextResponse> {
+export function assertDevOverridesEnabled(): void {
+  if (!devOverridesEnabled()) throw new AuthError("Not found", 404);
+}
+
+/**
+ * Wraps a route handler body, converting known error shapes into safe JSON
+ * responses. Never forwards a raw error message for errors we don't
+ * recognize: only our own typed errors (AuthError, ConflictError, trimmed Zod
+ * issues) or a small allowlist of Prisma error codes get a specific, still
+ * generic message; everything else is logged server-side and returned as an
+ * opaque 500.
+ */
+export async function withApiErrorHandling(fn: () => Promise<NextResponse>): Promise<NextResponse> {
   try {
     return await fn();
   } catch (err) {
-    if (err instanceof AuthError || err instanceof ConflictError) {
+    if (err instanceof AuthError) {
+      return NextResponse.json({ error: err.message, code: err.code }, { status: err.status });
+    }
+    if (err instanceof ConflictError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    if (err && typeof err === "object" && "issues" in err) {
-      return NextResponse.json(
-        { error: "Validation failed", issues: (err as { issues: unknown }).issues },
-        { status: 400 },
-      );
+    if (err && typeof err === "object" && "issues" in err && Array.isArray((err as { issues: unknown }).issues)) {
+      const issues = (err as { issues: { path?: (string | number)[]; message?: string }[] }).issues.map((i) => ({
+        path: (i.path ?? []).join("."),
+        message: i.message ?? "Invalid value",
+      }));
+      return NextResponse.json({ error: "Validation failed", issues }, { status: 400 });
+    }
+    if (err instanceof Prisma.PrismaClientValidationError) {
+      console.error("Prisma validation error:", err.message.split("\n")[0]);
+      return NextResponse.json({ error: "Invalid request" }, { status: 400 });
     }
     if (err instanceof Prisma.PrismaClientKnownRequestError) {
       return prismaErrorResponse(err);
@@ -78,20 +84,17 @@ export async function withApiErrorHandling(
 
 function prismaErrorResponse(err: Prisma.PrismaClientKnownRequestError): NextResponse {
   switch (err.code) {
-    case "P2025": // record required for the operation was not found
-      console.error("Prisma record-not-found error:", err.message);
+    case "P2025":
+      console.error("Prisma record-not-found error:", err.code);
       return NextResponse.json({ error: "The requested resource was not found" }, { status: 404 });
-    case "P2002": // unique constraint violation
-      console.error("Prisma unique-constraint error:", err.message, err.meta);
+    case "P2002":
+      console.error("Prisma unique-constraint error on", err.meta?.target);
       return NextResponse.json({ error: "A conflicting record already exists" }, { status: 409 });
-    case "P2003": // foreign key constraint violation
-      console.error("Prisma foreign-key error:", err.message, err.meta);
-      return NextResponse.json(
-        { error: "This action is blocked because the record is referenced elsewhere" },
-        { status: 409 },
-      );
+    case "P2003":
+      console.error("Prisma foreign-key error on", err.meta?.field_name);
+      return NextResponse.json({ error: "This action is blocked because the record is referenced elsewhere" }, { status: 409 });
     default:
-      console.error("Unhandled Prisma error:", err.code, err.message);
+      console.error("Unhandled Prisma error:", err.code);
       return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

@@ -1,26 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, withApiErrorHandling } from "@/lib/auth/guards";
 import { createPayout, listPayouts } from "@/lib/services/payouts";
-import { z } from "zod";
+import { adminCreatePayoutSchema, enumParam, paginationSchema } from "@/lib/validation/schemas";
 
-const createPayoutSchema = z.object({
-  tradingAccountId: z.string().min(1),
-  amount: z.number().positive(),
-});
-
-export async function GET() {
+export async function GET(req: NextRequest) {
   return withApiErrorHandling(async () => {
     await requireAdmin();
-    return NextResponse.json(await listPayouts());
+    const { searchParams } = new URL(req.url);
+    const { page, pageSize } = paginationSchema.parse(Object.fromEntries(searchParams));
+    const status = enumParam(["PENDING", "APPROVED", "PAID", "REJECTED"], searchParams.get("status"));
+    return NextResponse.json(await listPayouts({ page, pageSize, status }));
   });
 }
 
+/** Admin-recorded payout request on behalf of a trader (still needs a different admin to approve and a third to pay). */
 export async function POST(req: NextRequest) {
   return withApiErrorHandling(async () => {
     const admin = await requireAdmin();
-    const body = await req.json();
-    const data = createPayoutSchema.parse(body);
-    const payout = await createPayout(data.tradingAccountId, data.amount, admin.id);
+    const data = adminCreatePayoutSchema.parse(await req.json());
+    const payout = await createPayout({
+      tradingAccountId: data.tradingAccountId,
+      amount: data.amount,
+      requestedByUserId: admin.id,
+      destination: data.destination,
+      note: data.note,
+      byAdmin: true,
+    });
     return NextResponse.json(payout, { status: 201 });
   });
 }

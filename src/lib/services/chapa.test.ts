@@ -49,14 +49,14 @@ describe("verifyChapaWebhookSignature", () => {
     expect(result).toBe(false);
   });
 
-  it("accepts a valid chapa-signature (HMAC-SHA256 of the secret key itself) when x-chapa-signature is absent", async () => {
+  it("rejects the body-independent chapa-signature variant (constant per merchant, replayable) when x-chapa-signature is absent", async () => {
     const { verifyChapaWebhookSignature } = await import("@/lib/services/chapa");
     const rawBody = JSON.stringify({ tx_ref: "abc-123", status: "success" });
     const keySignature = createHmac("sha256", SECRET).update(SECRET).digest("hex");
 
     const result = verifyChapaWebhookSignature(rawBody, headersFrom({ "chapa-signature": keySignature }));
 
-    expect(result).toBe(true);
+    expect(result).toBe(false);
   });
 
   it("rejects when neither header is present", async () => {
@@ -161,5 +161,16 @@ describe("initializeChapaTransaction / verifyChapaTransaction (fetch mocked - no
     const result = await verifyChapaTransaction("ref-6");
 
     expect(result.paymentStatus).toBe("pending");
+  });
+});
+
+describe("isDeliverableEmail", () => {
+  it("accepts ordinary addresses and rejects reserved or malformed ones", async () => {
+    const { isDeliverableEmail } = await import("@/lib/services/chapa");
+    expect(isDeliverableEmail("abebe@gmail.com")).toBe(true);
+    expect(isDeliverableEmail("trader@company.com.et")).toBe(true);
+    expect(isDeliverableEmail("alex@mellafx.local")).toBe(false);
+    expect(isDeliverableEmail("user@example.test")).toBe(false);
+    expect(isDeliverableEmail("not-an-email")).toBe(false);
   });
 });

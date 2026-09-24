@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, withApiErrorHandling } from "@/lib/auth/guards";
 import { createAccountForUser, listAccounts } from "@/lib/services/accounts";
-import { paginationSchema } from "@/lib/validation/schemas";
-import type { AccountStatus } from "@prisma/client";
+import { enumParam, paginationSchema } from "@/lib/validation/schemas";
 import { z } from "zod";
 
 export async function GET(req: NextRequest) {
@@ -10,7 +9,7 @@ export async function GET(req: NextRequest) {
     await requireAdmin();
     const { searchParams } = new URL(req.url);
     const { page, pageSize, search } = paginationSchema.parse(Object.fromEntries(searchParams));
-    const status = (searchParams.get("status") as AccountStatus | "ALL") ?? "ALL";
+    const status = enumParam(["ACTIVE", "PASSED", "FAILED", "SUSPENDED", "FROZEN", "FUNDED"], searchParams.get("status"));
 
     const result = await listAccounts({ search, status, page, pageSize });
     return NextResponse.json(result);

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { DataTable, type Column } from "@/components/ui/DataTable";
 import { Pagination } from "@/components/ui/Pagination";
 import { StatusBadge } from "@/components/ui/Badge";
-import { formatCurrency, formatDateTime } from "@/lib/format";
+import { formatDateTime, formatSigned } from "@/lib/format";
 
 type AccountOption = { id: string; template: { id: string; name: string } | null; status: string };
 type Trade = {
@@ -88,7 +88,7 @@ export function HistoryExplorer() {
     { key: "entry", header: "Entry", render: (t) => t.entryPrice },
     { key: "exit", header: "Exit", render: (t) => t.exitPrice ?? "—" },
     { key: "volume", header: "Volume", render: (t) => t.volume },
-    { key: "pnl", header: "Profit/Loss", render: (t) => <span className={t.netProfit >= 0 ? "text-success" : "text-danger"}>{formatCurrency(t.netProfit)}</span> },
+    { key: "pnl", header: "Profit/Loss", render: (t) => <span className={t.netProfit >= 0 ? "text-success" : "text-danger"}>{formatSigned(t.netProfit, "ETB")}</span> },
     { key: "status", header: "Status", render: (t) => <StatusBadge status={t.status} /> },
     { key: "opened", header: "Date", render: (t) => formatDateTime(t.openTime) },
   ];

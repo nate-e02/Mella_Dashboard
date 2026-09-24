@@ -1,27 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, withApiErrorHandling } from "@/lib/auth/guards";
 import { createTemplate, listTemplates } from "@/lib/services/templates";
-import { templateSchema } from "@/lib/validation/schemas";
-import type { TemplateStatus } from "@prisma/client";
+import { enumParam, paginationSchema, templateSchema } from "@/lib/validation/schemas";
 
 export async function GET(req: NextRequest) {
   return withApiErrorHandling(async () => {
     await requireAdmin();
     const { searchParams } = new URL(req.url);
-    const search = searchParams.get("search") ?? "";
-    const status = (searchParams.get("status") as TemplateStatus | "ALL") ?? "ALL";
-    const phase = searchParams.get("phase") ?? "ALL";
-
-    const items = await listTemplates({ search, status, phase });
-    return NextResponse.json({ items, total: items.length, page: 1, pageSize: items.length || 1, totalPages: 1 });
+    const { page, pageSize, search } = paginationSchema.parse({ ...Object.fromEntries(searchParams), pageSize: searchParams.get("pageSize") ?? "100" });
+    const status = enumParam(["DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"], searchParams.get("status"));
+    const phase = enumParam(["PHASE_1", "PHASE_2", "FUNDED"], searchParams.get("phase"));
+    return NextResponse.json(await listTemplates({ search, status, phase, page, pageSize }));
   });
 }
 
 export async function POST(req: NextRequest) {
   return withApiErrorHandling(async () => {
     const admin = await requireAdmin();
-    const body = await req.json();
-    const data = templateSchema.parse(body);
+    const data = templateSchema.parse(await req.json());
     const template = await createTemplate(data, admin.id);
     return NextResponse.json(template, { status: 201 });
   });

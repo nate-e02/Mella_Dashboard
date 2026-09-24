@@ -16,7 +16,7 @@ vi.mock("@/lib/auth/session", async (importOriginal) => {
 const { POST } = await import("@/app/api/admin/purchases/[id]/mark-paid/route");
 
 function sessionUser(overrides: Partial<SessionUser>): SessionUser {
-  return { id: "u1", name: "Test", email: "test@example.com", role: "TRADER", status: "ACTIVE", ...overrides };
+  return { id: "u1", name: "Test", email: "test@example.com", role: "TRADER", status: "ACTIVE", mfaEnabled: false, emailVerifiedAt: null, sessionId: "s1", ...overrides };
 }
 
 function postRequest() {

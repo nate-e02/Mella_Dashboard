@@ -1,6 +1,8 @@
+import { requireAdminPage } from "@/lib/auth/pageGuards";
 import { TemplateForm } from "@/components/admin/TemplateForm";
 
-export default function NewTemplatePage() {
+export default async function NewTemplatePage() {
+  await requireAdminPage();
   return (
     <div className="flex flex-col gap-6">
       <div>

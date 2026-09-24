@@ -4,7 +4,7 @@ import type { Prisma } from "@prisma/client";
 import { logAudit } from "@/lib/services/audit";
 import { evaluateAccount } from "@/lib/services/challengeEngine";
 
-const DEMO_SYMBOLS = ["EURUSD", "GBPUSD", "XAUUSD", "US30", "NAS100", "BTCUSD"];
+const DEMO_SYMBOLS = ["EURUSD", "GBPUSD", "XAUUSD", "USDJPY", "BTCUSD"];
 
 /**
  * Admin-triggered demo trade generator. There is no live trading engine in
@@ -15,29 +15,48 @@ export async function simulateTrades(accountId: string, count: number, winBias: 
   const account = await prisma.tradingAccount.findUniqueOrThrow({ where: { id: accountId } });
   let openTime = new Date(Date.now() - count * 20 * 60 * 60 * 1000);
 
+  const rows: Prisma.TradeCreateManyInput[] = [];
   for (let i = 0; i < count; i++) {
     const isWin = Math.random() < winBias;
     const pct = (isWin ? 1 : -1) * (0.2 + Math.random() * 1.2);
     const netProfit = Number(((account.startingBalance * pct) / 100).toFixed(2));
     const closeTime = new Date(openTime.getTime() + (30 + Math.random() * 240) * 60 * 1000);
-
-    await prisma.trade.create({
-      data: {
-        accountId,
-        symbol: DEMO_SYMBOLS[Math.floor(Math.random() * DEMO_SYMBOLS.length)],
-        side: Math.random() > 0.5 ? "BUY" : "SELL",
-        volume: Number((0.1 + Math.random() * 2).toFixed(2)),
-        entryPrice: Number((1 + Math.random() * 100).toFixed(4)),
-        exitPrice: Number((1 + Math.random() * 100).toFixed(4)),
-        openTime,
-        closeTime,
-        profit: netProfit,
-        netProfit,
-        status: "CLOSED",
-      },
+    const entryPrice = Number((1 + Math.random() * 100).toFixed(4));
+    rows.push({
+      accountId,
+      symbol: DEMO_SYMBOLS[Math.floor(Math.random() * DEMO_SYMBOLS.length)],
+      side: Math.random() > 0.5 ? "BUY" : "SELL",
+      volume: Number((0.1 + Math.random() * 2).toFixed(2)),
+      entryPrice,
+      exitPrice: Number((entryPrice * (1 + pct / 100)).toFixed(4)),
+      openTime,
+      closeTime,
+      profit: netProfit,
+      netProfit,
+      status: "CLOSED",
+      feedSource: "SIMULATED",
     });
     openTime = new Date(openTime.getTime() + (12 + Math.random() * 24) * 60 * 60 * 1000);
   }
+
+  const total = rows.reduce((s, r) => s + (r.netProfit ?? 0), 0);
+  await prisma.$transaction(async (tx) => {
+    await tx.trade.createMany({ data: rows });
+    // Keep the incremental counters consistent with the inserted history.
+    await tx.tradingAccount.update({
+      where: { id: accountId },
+      data: {
+        balance: { increment: total },
+        realizedPnl: { increment: total },
+        tradeCount: { increment: rows.length },
+        winCount: { increment: rows.filter((r) => (r.netProfit ?? 0) > 0).length },
+        lossCount: { increment: rows.filter((r) => (r.netProfit ?? 0) < 0).length },
+        grossProfit: { increment: rows.filter((r) => (r.netProfit ?? 0) > 0).reduce((s, r) => s + (r.netProfit ?? 0), 0) },
+        grossLoss: { increment: -rows.filter((r) => (r.netProfit ?? 0) < 0).reduce((s, r) => s + (r.netProfit ?? 0), 0) },
+        lastTradeAt: new Date(),
+      },
+    });
+  });
 
   const updated = await evaluateAccount(accountId, actorId);
   await logAudit({
@@ -45,7 +64,7 @@ export async function simulateTrades(accountId: string, count: number, winBias: 
     action: "DEMO_TRADES_SIMULATED",
     targetType: "TradingAccount",
     targetId: accountId,
-    after: { count, winBias, resultingStatus: updated.status },
+    after: { count, winBias, resultingStatus: updated.status, note: "DEVELOPMENT ONLY - simulated trades" },
   });
   return updated;
 }
@@ -103,7 +122,7 @@ export async function listTradesForAccount(params: {
   page: number;
   pageSize: number;
 }) {
-  const where: Prisma.TradeWhereInput = { accountId: params.accountId };
+  const where: Prisma.TradeWhereInput = { accountId: params.accountId, archivedAt: null };
   if (params.from || params.to) {
     where.openTime = {};
     if (params.from) where.openTime.gte = params.from;

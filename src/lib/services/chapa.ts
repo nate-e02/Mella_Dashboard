@@ -24,6 +24,14 @@ function getSecretKey(): string {
   return key;
 }
 
+const RESERVED_TLDS = new Set(["local", "localhost", "test", "example", "invalid", "internal"]);
+
+/** True for addresses Chapa will accept (a public-looking domain with a real TLD). */
+export function isDeliverableEmail(email: string): boolean {
+  const match = /^[^@\s]+@([^@\s]+)\.([a-z]{2,})$/i.exec(email.trim());
+  return !!match && !RESERVED_TLDS.has(match[2].toLowerCase());
+}
+
 export type ChapaInitializeParams = {
   /** Authoritative amount in ETB, already resolved server-side - never client input. */
   amount: number;
@@ -51,7 +59,8 @@ export async function initializeChapaTransaction(params: ChapaInitializeParams):
       body: JSON.stringify({
         amount: params.amount.toFixed(2),
         currency: CHAPA_CURRENCY,
-        email: params.email,
+        // Chapa rejects undeliverable addresses (e.g. *.local); email is optional, so omit it then.
+        email: params.email && isDeliverableEmail(params.email) ? params.email : undefined,
         first_name: params.firstName,
         last_name: params.lastName,
         tx_ref: params.txRef,
@@ -152,17 +161,13 @@ function safeCompare(a: string, b: string): boolean {
 export function verifyChapaWebhookSignature(rawBody: string, headers: { get(name: string): string | null }): boolean {
   const secret = getSecretKey();
 
+  // Only the body-bound `x-chapa-signature` is accepted. Chapa also sends
+  // `chapa-signature` (HMAC of the secret itself), but that value is
+  // constant per merchant and gives no assurance about the body, so it is
+  // deliberately ignored. The payload is re-verified with Chapa's API
+  // regardless (see purchases.ts).
   const bodySignature = headers.get("x-chapa-signature");
-  if (bodySignature) {
-    const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
-    if (safeCompare(expected, bodySignature)) return true;
-  }
-
-  const keySignature = headers.get("chapa-signature");
-  if (keySignature) {
-    const expected = createHmac("sha256", secret).update(secret).digest("hex");
-    if (safeCompare(expected, keySignature)) return true;
-  }
-
-  return false;
+  if (!bodySignature) return false;
+  const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
+  return safeCompare(expected, bodySignature);
 }

@@ -41,15 +41,24 @@ export async function listUsers(params: {
       orderBy: { createdAt: "desc" },
       skip: (params.page - 1) * params.pageSize,
       take: params.pageSize,
-      include: {
+      select: {
+        ...SAFE_USER_SELECT,
+        mfaEnabled: true,
+        emailVerifiedAt: true,
         _count: { select: { tradingAccounts: true, purchases: true } },
-        kycSubmissions: { orderBy: { submittedAt: "desc" }, take: 1 },
-        tradingAccounts: { select: { status: true } },
-        purchases: { select: { amount: true, status: true } },
+        kycSubmissions: { orderBy: { submittedAt: "desc" }, take: 1, select: { status: true } },
       },
     }),
     prisma.user.count({ where }),
   ]);
+
+  const ids = users.map((u) => u.id);
+  const [accountCounts, revenue] = ids.length
+    ? await Promise.all([
+        prisma.tradingAccount.groupBy({ by: ["userId", "status"], where: { userId: { in: ids }, status: { in: ["ACTIVE", "FUNDED"] } }, _count: { _all: true } }),
+        prisma.purchase.groupBy({ by: ["userId"], where: { userId: { in: ids }, status: "PAID", currency: "ETB" }, _sum: { amount: true } }),
+      ])
+    : [[], []];
 
   const items = users.map((u) => ({
     id: u.id,
@@ -59,11 +68,13 @@ export async function listUsers(params: {
     status: u.status,
     createdAt: u.createdAt,
     lastActivityAt: u.lastActivityAt,
+    mfaEnabled: u.mfaEnabled,
+    emailVerified: !!u.emailVerifiedAt,
     accountCount: u._count.tradingAccounts,
-    activeAccounts: u.tradingAccounts.filter((a) => a.status === "ACTIVE").length,
-    fundedAccounts: u.tradingAccounts.filter((a) => a.status === "FUNDED").length,
+    activeAccounts: accountCounts.find((c) => c.userId === u.id && c.status === "ACTIVE")?._count._all ?? 0,
+    fundedAccounts: accountCounts.find((c) => c.userId === u.id && c.status === "FUNDED")?._count._all ?? 0,
     totalPurchases: u._count.purchases,
-    totalRevenue: u.purchases.filter((p) => p.status === "PAID").reduce((s, p) => s + p.amount, 0),
+    totalRevenue: revenue.find((r) => r.userId === u.id)?._sum.amount ?? 0,
     kycStatus: u.kycSubmissions[0]?.status ?? "NONE",
   }));
 
@@ -75,9 +86,13 @@ export async function getUserDetail(id: string) {
     where: { id },
     select: {
       ...SAFE_USER_SELECT,
-      tradingAccounts: { include: { template: { select: { name: true } } }, orderBy: { createdAt: "desc" } },
-      purchases: { include: { template: { select: { name: true } } }, orderBy: { createdAt: "desc" } },
-      kycSubmissions: { orderBy: { submittedAt: "desc" } },
+      mfaEnabled: true,
+      emailVerifiedAt: true,
+      phone: true,
+      tradingAccounts: { include: { template: { select: { name: true } } }, orderBy: { createdAt: "desc" }, take: 50 },
+      purchases: { include: { template: { select: { name: true } } }, orderBy: { createdAt: "desc" }, take: 50 },
+      kycSubmissions: { orderBy: { submittedAt: "desc" }, take: 20 },
+      payouts: { orderBy: { requestedAt: "desc" }, take: 20 },
       crmLead: true,
     },
   });
@@ -125,6 +140,16 @@ export async function updateUser(
 ) {
   const updated = await prisma.$transaction(async (tx) => {
     const before = await tx.user.findUniqueOrThrow({ where: { id } });
+
+    const demoting = (data.role && data.role !== "ADMIN" && before.role === "ADMIN") || (data.status === "DISABLED" && before.role === "ADMIN");
+    if (id === actorId && (demoting || data.status === "DISABLED")) {
+      throw new ConflictError("You cannot demote or disable your own admin account");
+    }
+    if (demoting) {
+      const otherActiveAdmins = await tx.user.count({ where: { role: "ADMIN", status: "ACTIVE", id: { not: id } } });
+      if (otherActiveAdmins === 0) throw new ConflictError("At least one active admin must remain");
+    }
+
     const result = await tx.user.update({ where: { id }, data, select: SAFE_USER_SELECT });
 
     await logAudit(

@@ -20,6 +20,9 @@ export default defineConfig({
     environment: "node",
     globals: false,
     include: ["src/**/*.test.ts", "tests/**/*.test.ts"],
+    setupFiles: ["./tests/setup.ts"],
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     // Integration tests share one Postgres database (the local dev DB) and
     // create/tear down their own uniquely-named fixtures, so they must not
     // run in parallel worker processes against the same connection pool.

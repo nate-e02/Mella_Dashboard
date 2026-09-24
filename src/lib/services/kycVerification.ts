@@ -60,11 +60,10 @@ export type StartVerificationResult = {
  * row and reuses it. No new schema or locking infrastructure is needed for
  * this - it's a built-in Prisma/Postgres transaction isolation level.
  */
-export async function startProviderVerification(user: {
-  id: string;
-  name: string;
-  email: string;
-}): Promise<StartVerificationResult> {
+export async function startProviderVerification(
+  user: { id: string; name: string; email: string },
+  attempt = 0,
+): Promise<StartVerificationResult> {
   let outcome: { submissionId: string; referenceId: string; isNew: boolean };
   try {
     outcome = await prisma.$transaction(
@@ -92,8 +91,8 @@ export async function startProviderVerification(user: {
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
   } catch (err) {
-    if (isSerializationFailure(err) || isUniqueConstraintOn(err, "providerReference")) {
-      return startProviderVerification(user);
+    if ((isSerializationFailure(err) || isUniqueConstraintOn(err, "providerReference")) && attempt < 3) {
+      return startProviderVerification(user, attempt + 1);
     }
     throw err;
   }
@@ -203,8 +202,8 @@ export async function adminOverrideKycStatus(submissionId: string, newStatus: Ky
       return before;
     }
 
-    const updated = await tx.kycSubmission.update({
-      where: { id: submissionId },
+    const claim = await tx.kycSubmission.updateMany({
+      where: { id: submissionId, status: before.status },
       data: {
         status: newStatus,
         reviewedAt: newStatus === "PENDING" ? null : new Date(),
@@ -212,6 +211,8 @@ export async function adminOverrideKycStatus(submissionId: string, newStatus: Ky
         failureReason: newStatus === "REJECTED" ? (reason ?? "manual_admin_override") : null,
       },
     });
+    if (claim.count === 0) return tx.kycSubmission.findUniqueOrThrow({ where: { id: submissionId } });
+    const updated = await tx.kycSubmission.findUniqueOrThrow({ where: { id: submissionId } });
 
     await logAudit(
       {

@@ -7,9 +7,8 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   return withApiErrorHandling(async () => {
     const admin = await requireAdmin();
     const { id } = await ctx.params;
-    const body = await req.json();
-    const { status } = accountStatusSchema.parse(body);
-    const updated = await setAccountStatusManually(id, status, admin.id);
+    const { status, reason } = accountStatusSchema.parse(await req.json());
+    const updated = await setAccountStatusManually(id, status, admin.id, reason);
     return NextResponse.json(updated);
   });
 }

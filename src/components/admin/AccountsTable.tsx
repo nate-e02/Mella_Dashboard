@@ -35,7 +35,21 @@ const STATUS_TABS = [
   { label: "Funded", value: "FUNDED" },
 ];
 
-const STATUS_ACTIONS = ["ACTIVE", "PASSED", "FAILED", "SUSPENDED", "FROZEN", "FUNDED"];
+function allowedTargets(status: string, phase: string): string[] {
+  const reinstate = phase === "FUNDED" ? "FUNDED" : "ACTIVE";
+  switch (status) {
+    case "ACTIVE":
+    case "FUNDED":
+      return ["SUSPENDED", "FROZEN", "FAILED"];
+    case "SUSPENDED":
+    case "FROZEN":
+      return [reinstate, "FAILED"];
+    case "FAILED":
+      return [reinstate];
+    default:
+      return [];
+  }
+}
 
 export function AccountsTable() {
   const [status, setStatus] = useState("ALL");
@@ -53,11 +67,12 @@ export function AccountsTable() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus }),
       });
-      if (!res.ok) throw new Error("Failed to update status");
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Failed to update status");
       toast.push("Account status updated", "success");
       refetch();
-    } catch {
-      toast.push("Failed to update status", "error");
+    } catch (err) {
+      toast.push(err instanceof Error ? err.message : "Failed to update status", "error");
     }
   }
 
@@ -75,14 +90,14 @@ export function AccountsTable() {
     },
     { key: "template", header: "Template", render: (r) => r.template?.name ?? "—" },
     { key: "phase", header: "Phase", render: (r) => r.phase.replace("_", " ") },
-    { key: "balance", header: "Balance", render: (r) => formatCurrency(r.balance) },
-    { key: "equity", header: "Equity", render: (r) => formatCurrency(r.equity) },
+    { key: "balance", header: "Balance", render: (r) => formatCurrency(r.balance, "ETB") },
+    { key: "equity", header: "Equity", render: (r) => formatCurrency(r.equity, "ETB") },
     {
       key: "pnl",
       header: "P&L",
       render: (r) => {
         const pnl = r.balance - r.startingBalance;
-        return <span className={pnl >= 0 ? "text-success" : "text-danger"}>{formatCurrency(pnl)}</span>;
+        return <span className={pnl >= 0 ? "text-success" : "text-danger"}>{formatCurrency(pnl, "ETB")}</span>;
       },
     },
     { key: "status", header: "Status", render: (r) => <StatusBadge status={r.status} /> },
@@ -98,10 +113,12 @@ export function AccountsTable() {
           <select
             className="input-base !w-auto !py-1 text-xs"
             value=""
+            aria-label="Set account status"
             onChange={(e) => e.target.value && changeStatus(r.id, e.target.value)}
+            disabled={allowedTargets(r.status, r.phase).length === 0}
           >
             <option value="">Set status...</option>
-            {STATUS_ACTIONS.filter((s) => s !== r.status).map((s) => (
+            {allowedTargets(r.status, r.phase).map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { clsx } from "clsx";
 import { useState } from "react";
+import { NotificationsBell } from "@/components/trader/NotificationsBell";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard" },
@@ -52,15 +53,19 @@ export function TraderNav() {
           ))}
         </nav>
 
-        <div className="hidden md:block">
+        <div className="hidden items-center gap-2 md:flex">
+          <NotificationsBell />
           <button onClick={handleLogout} disabled={loggingOut} className="btn-secondary !py-1.5 text-sm">
             {loggingOut ? "Logging out..." : "Logout"}
           </button>
         </div>
 
-        <button className="btn-secondary !px-3 !py-1.5 md:hidden" onClick={() => setMobileOpen((v) => !v)}>
-          ☰
-        </button>
+        <div className="flex items-center gap-2 md:hidden">
+          <NotificationsBell />
+          <button className="btn-secondary !px-3 !py-1.5" onClick={() => setMobileOpen((v) => !v)} aria-label="Open menu" aria-expanded={mobileOpen}>
+            ☰
+          </button>
+        </div>
       </div>
 
       {mobileOpen && (

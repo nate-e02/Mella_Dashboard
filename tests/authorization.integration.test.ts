@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
-import { listAccountsForUser, getAccountById } from "@/lib/services/accounts";
+import { listAccountsForUser, getAccountDetail } from "@/lib/services/accounts";
 import { assertOwnsResource } from "@/lib/auth/ownership";
 import { AuthError } from "@/lib/auth/guards";
 import { TestFixtures } from "./helpers/fixtures";
@@ -45,12 +45,12 @@ describe("trader resource scoping", () => {
     expect(() => assertOwnsResource(account?.userId, traderA.id)).not.toThrow();
   });
 
-  it("admin-facing getAccountById is not scoped to any single user (by design - admins see every account)", async () => {
+  it("admin-facing getAccountDetail is not scoped to any single user (by design - admins see every account)", async () => {
     const traderA = await fixtures.createUser("TRADER");
     const template = await fixtures.createTemplate();
     const accountA = await fixtures.createAccount({ userId: traderA.id, template });
 
-    const account = await getAccountById(accountA.id);
+    const account = await getAccountDetail(accountA.id);
 
     expect(account?.userId).toBe(traderA.id);
   });

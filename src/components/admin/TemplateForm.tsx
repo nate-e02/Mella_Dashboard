@@ -24,6 +24,7 @@ type FormState = {
   profitTarget: string;
   profitSplit: string;
   maxDrawdown: string;
+  drawdownMode: string;
   dailyDrawdown: string;
   minTradingDays: string;
   maxTradingDays: string;
@@ -46,7 +47,7 @@ function toFormState(t?: Template | null): FormState {
     name: t?.name ?? "",
     description: t?.description ?? "",
     price: t?.price?.toString() ?? "49",
-    currency: t?.currency ?? "USD",
+    currency: "ETB",
     status: t?.status ?? "DRAFT",
     phase: t?.phase ?? "PHASE_1",
     programType: t?.programType ?? "STANDARD",
@@ -55,10 +56,11 @@ function toFormState(t?: Template | null): FormState {
     startingBalance: t?.startingBalance?.toString() ?? "10000",
     accountSize: t?.accountSize?.toString() ?? "10000",
     leverage: t?.leverage?.toString() ?? "100",
-    accountCurrency: t?.accountCurrency ?? "USD",
+    accountCurrency: "ETB",
     profitTarget: t?.profitTarget?.toString() ?? "8",
     profitSplit: t?.profitSplit?.toString() ?? "80",
     maxDrawdown: t?.maxDrawdown?.toString() ?? "10",
+    drawdownMode: t?.drawdownMode ?? "STATIC",
     dailyDrawdown: t?.dailyDrawdown?.toString() ?? "5",
     minTradingDays: t?.minTradingDays?.toString() ?? "0",
     maxTradingDays: t?.maxTradingDays?.toString() ?? "",
@@ -71,7 +73,7 @@ function toFormState(t?: Template | null): FormState {
     overnightHoldingAllowed: t?.overnightHoldingAllowed ?? true,
     newsTradingAllowed: t?.newsTradingAllowed ?? true,
     stopLossRequired: t?.stopLossRequired ?? false,
-    dailyLossResetTime: t?.dailyLossResetTime ?? "00:00 UTC",
+    dailyLossResetTime: t?.dailyLossResetTime ?? "00:00 EAT",
     consistencyRequirement: t?.consistencyRequirement?.toString() ?? "",
     nextPhaseId: t?.nextPhaseId ?? "",
   };
@@ -125,6 +127,7 @@ export function TemplateForm({ template, readOnly }: { template?: Template | nul
       profitTarget: numOrUndefined(form.profitTarget) ?? null,
       profitSplit: Number(form.profitSplit),
       maxDrawdown: Number(form.maxDrawdown),
+      drawdownMode: form.drawdownMode,
       dailyDrawdown: Number(form.dailyDrawdown),
       minTradingDays: Number(form.minTradingDays || 0),
       maxTradingDays: numOrUndefined(form.maxTradingDays) ?? null,
@@ -190,7 +193,7 @@ export function TemplateForm({ template, readOnly }: { template?: Template | nul
               <input type="number" min={0} step="0.01" className="input-base" value={form.price} onChange={(e) => set("price", e.target.value)} />
             </Field>
             <Field label="Currency">
-              <input className="input-base" value={form.currency} onChange={(e) => set("currency", e.target.value)} />
+              <input className="input-base" value="ETB" readOnly aria-readonly title="All prices are charged in Ethiopian birr via Chapa" />
             </Field>
             <Field label="Status">
               <select className="input-base" value={form.status} onChange={(e) => set("status", e.target.value)}>
@@ -241,7 +244,7 @@ export function TemplateForm({ template, readOnly }: { template?: Template | nul
               <input type="number" min={1} className="input-base" value={form.leverage} onChange={(e) => set("leverage", e.target.value)} />
             </Field>
             <Field label="Account Currency">
-              <input className="input-base" value={form.accountCurrency} onChange={(e) => set("accountCurrency", e.target.value)} />
+              <input className="input-base" value="ETB" readOnly aria-readonly title="Accounts are denominated in Ethiopian birr" />
             </Field>
           </div>
         </Section>
@@ -255,10 +258,16 @@ export function TemplateForm({ template, readOnly }: { template?: Template | nul
               <input type="number" min={0} max={100} className="input-base" value={form.profitSplit} onChange={(e) => set("profitSplit", e.target.value)} />
             </Field>
             <Field label="Max Drawdown (%)">
-              <input type="number" min={0} className="input-base" value={form.maxDrawdown} onChange={(e) => set("maxDrawdown", e.target.value)} />
+              <div className="flex gap-2">
+                <input type="number" min={0.1} step="0.1" className="input-base" value={form.maxDrawdown} onChange={(e) => set("maxDrawdown", e.target.value)} />
+                <select className="input-base !w-auto" value={form.drawdownMode} onChange={(e) => set("drawdownMode", e.target.value)} aria-label="Drawdown mode">
+                  <option value="STATIC">Static (from initial balance)</option>
+                  <option value="TRAILING">Trailing (from peak, locks at breakeven)</option>
+                </select>
+              </div>
             </Field>
             <Field label="Daily Drawdown (%)">
-              <input type="number" min={0} className="input-base" value={form.dailyDrawdown} onChange={(e) => set("dailyDrawdown", e.target.value)} />
+              <input type="number" min={0.1} step="0.1" className="input-base" value={form.dailyDrawdown} onChange={(e) => set("dailyDrawdown", e.target.value)} />
             </Field>
             <Field label="Min Trading Days">
               <input type="number" min={0} className="input-base" value={form.minTradingDays} onChange={(e) => set("minTradingDays", e.target.value)} />

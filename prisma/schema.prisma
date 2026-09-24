@@ -94,8 +94,65 @@ enum TicketStatus {
 
 enum PayoutStatus {
   PENDING
+  APPROVED
   PAID
   REJECTED
+}
+
+enum DrawdownMode {
+  STATIC
+  TRAILING
+}
+
+enum PositionStatus {
+  OPEN
+  CLOSED
+}
+
+enum OrderType {
+  MARKET
+  LIMIT
+  STOP
+}
+
+enum OrderStatus {
+  PENDING
+  FILLED
+  CANCELLED
+  REJECTED
+}
+
+enum CloseReason {
+  MANUAL
+  STOP_LOSS
+  TAKE_PROFIT
+  BREACH
+  ADMIN
+  STOP_OUT
+  EXPIRED
+}
+
+enum LedgerEntryType {
+  PURCHASE
+  REFUND
+  TRADE_PNL
+  COMMISSION
+  SWAP
+  PAYOUT
+  ADJUSTMENT
+}
+
+enum VerificationTokenType {
+  EMAIL_VERIFY
+  PASSWORD_RESET
+  PHONE_OTP
+}
+
+enum InstrumentCategory {
+  FOREX
+  METAL
+  CRYPTO
+  INDEX
 }
 
 // ---------------------------------------------------------------------------
@@ -103,40 +160,72 @@ enum PayoutStatus {
 // ---------------------------------------------------------------------------
 
 model User {
-  id             String     @id @default(cuid())
-  name           String
-  email          String     @unique
-  passwordHash   String
-  role           Role       @default(TRADER)
-  status         UserStatus @default(ACTIVE)
-  lastActivityAt DateTime?
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  id                String     @id @default(cuid())
+  name              String
+  email             String     @unique
+  passwordHash      String
+  role              Role       @default(TRADER)
+  status            UserStatus @default(ACTIVE)
+  lastActivityAt    DateTime?
+  phone             String?    @unique
+  emailVerifiedAt   DateTime?
+  failedLoginCount  Int        @default(0)
+  lockedUntil       DateTime?
+  mfaEnabled        Boolean    @default(false)
+  // AES-256-GCM encrypted TOTP secret (see src/lib/auth/mfa.ts); never plaintext.
+  mfaSecretEnc      String?
+  // bcrypt hashes of single-use backup codes
+  mfaBackupCodes    Json?
+  passwordChangedAt DateTime?
+  telegramChatId    String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
 
-  sessions        Session[]
-  purchases       Purchase[]
-  tradingAccounts TradingAccount[]
-  kycSubmissions  KycSubmission[]  @relation("KycOwner")
-  kycReviewed     KycSubmission[]  @relation("KycReviewer")
-  crmLead         CrmLead?
-  supportTickets  SupportTicket[]
-  notifications   Notification[]
-  auditLogs       AuditLog[]
-  payouts         Payout[]
+  sessions           Session[]
+  purchases          Purchase[]
+  tradingAccounts    TradingAccount[]
+  kycSubmissions     KycSubmission[]     @relation("KycOwner")
+  kycReviewed        KycSubmission[]     @relation("KycReviewer")
+  crmLead            CrmLead?
+  supportTickets     SupportTicket[]
+  notifications      Notification[]
+  auditLogs          AuditLog[]
+  payouts            Payout[]
+  verificationTokens VerificationToken[]
+  ledgerEntries      LedgerEntry[]
 
   @@index([role])
   @@index([status])
+  @@index([createdAt])
 }
 
 model Session {
-  id        String    @id @default(cuid())
-  userId    String
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime
-  revokedAt DateTime?
-  createdAt DateTime  @default(now())
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  lastSeenAt DateTime  @default(now())
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
 
   @@index([userId])
+  @@index([expiresAt])
+}
+
+model VerificationToken {
+  id        String                @id @default(cuid())
+  userId    String
+  user      User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      VerificationTokenType
+  // sha256 of the token that was sent; the raw token is never stored
+  tokenHash String                @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime              @default(now())
+
+  @@index([userId, type])
 }
 
 // ---------------------------------------------------------------------------
@@ -147,8 +236,9 @@ model Template {
   id          String         @id @default(cuid())
   name        String
   description String         @default("")
+  // Price charged to the customer, always in `currency` (ETB for Chapa).
   price       Float          @default(0)
-  currency    String         @default("USD")
+  currency    String         @default("ETB")
   status      TemplateStatus @default(DRAFT)
   phase       TemplatePhase  @default(PHASE_1)
   programType ProgramType    @default(STANDARD)
@@ -162,20 +252,23 @@ model Template {
   startingBalance Float  @default(10000)
   accountSize     Float  @default(10000)
   leverage        Int    @default(100)
-  accountCurrency String @default("USD")
+  accountCurrency String @default("ETB")
 
   // challenge rules
   profitTarget        Float?
-  profitSplit         Int    @default(80)
-  maxDrawdown         Float  @default(10)
-  dailyDrawdown       Float  @default(5)
-  minTradingDays      Int    @default(0)
+  profitSplit         Int          @default(80)
+  maxDrawdown         Float        @default(10)
+  // STATIC: measured from the initial balance. TRAILING: measured from the
+  // equity high-water mark until it locks at initial balance + limit.
+  drawdownMode        DrawdownMode @default(STATIC)
+  dailyDrawdown       Float        @default(5)
+  minTradingDays      Int          @default(0)
   maxTradingDays      Int?
   maxPositionSize     Float?
   maxPositions        Int?
   durationDays        Int?
-  passingRequirements String @default("")
-  failingRequirements String @default("")
+  passingRequirements String       @default("")
+  failingRequirements String       @default("")
 
   // other rules
   weekendHoldingAllowed   Boolean @default(true)
@@ -199,6 +292,7 @@ model Template {
 
   @@index([status])
   @@index([groupKey])
+  @@index([status, phase])
 }
 
 // ---------------------------------------------------------------------------
@@ -206,38 +300,41 @@ model Template {
 // ---------------------------------------------------------------------------
 
 model Purchase {
-  id                String         @id @default(cuid())
-  userId            String
-  user              User           @relation(fields: [userId], references: [id])
-  templateId        String?
-  template          Template?      @relation(fields: [templateId], references: [id])
-  status            PurchaseStatus @default(PENDING)
-  amount            Float
-  currency          String         @default("USD")
+  id             String         @id @default(cuid())
+  userId         String
+  user           User           @relation(fields: [userId], references: [id])
+  templateId     String?
+  template       Template?      @relation(fields: [templateId], references: [id])
+  status         PurchaseStatus @default(PENDING)
+  amount         Float
+  currency       String         @default("ETB")
   // Unique payment-provider transaction reference (Chapa's `tx_ref`, or a
   // synthetic reference for the admin test-paid action / legacy seed data).
   // Renamed from `demoTransactionId` when real Chapa payments replaced the
   // simulated instant-PAID flow - same column, same unique constraint.
-  providerTxRef     String         @unique
+  providerTxRef  String         @unique
   // Client-supplied key identifying one logical purchase attempt (e.g. one
   // click of "Pay"). Nullable so existing/seeded rows and any other
   // creation path without a key are unaffected; unique so a retried request
   // (double-click, network retry) with the same key can never create a
   // second Purchase/TradingAccount pair - see initiateChapaPurchase().
-  idempotencyKey    String?        @unique
-  paymentDate       DateTime?
-  refundedAt        DateTime?
-  cancelledAt       DateTime?
+  idempotencyKey String?        @unique
+  paymentDate    DateTime?
+  refundedAt     DateTime?
+  cancelledAt    DateTime?
   // frozen copy of template config at time of purchase
-  snapshot          Json
+  snapshot       Json
 
   tradingAccount TradingAccount?
+  ledgerEntries  LedgerEntry[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([userId])
   @@index([status])
+  @@index([status, paymentDate])
+  @@index([createdAt])
 }
 
 model TradingAccount {
@@ -263,8 +360,24 @@ model TradingAccount {
   balance            Float
   equity             Float
   highWaterMark      Float
+  // Equity captured at the most recent daily reset boundary (the account's
+  // dailyLossResetTime, EAT by default). Daily loss = dailyAnchorBalance - equity.
   dailyAnchorBalance Float
   dailyAnchorDate    DateTime @default(now())
+
+  // Incrementally maintained so the engine never has to load every trade.
+  realizedPnl   Float     @default(0)
+  tradeCount    Int       @default(0)
+  winCount      Int       @default(0)
+  lossCount     Int       @default(0)
+  grossProfit   Float     @default(0)
+  grossLoss     Float     @default(0)
+  marginUsed    Float     @default(0)
+  lastTradeAt   DateTime?
+  // Set from snapshot.durationDays at creation; the sweep fails the account
+  // when it passes without the target being met.
+  expiresAt     DateTime?
+  failureReason String?
 
   statusChangedAt DateTime  @default(now())
   passedAt        DateTime?
@@ -274,36 +387,237 @@ model TradingAccount {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  trades  Trade[]
-  payouts Payout[]
+  trades          Trade[]
+  payouts         Payout[]
+  positions       Position[]
+  orders          Order[]
+  equitySnapshots EquitySnapshot[]
+  ledgerEntries   LedgerEntry[]
 
   @@index([userId])
   @@index([status])
   @@index([templateId])
+  @@index([status, createdAt])
+  @@index([phase, status])
+  @@index([status, failedAt])
+  @@index([userId, status])
 }
 
 model Trade {
-  id         String         @id @default(cuid())
-  accountId  String
-  account    TradingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  symbol     String
-  side       TradeSide
-  volume     Float
-  entryPrice Float
-  exitPrice  Float?
-  stopLoss   Float?
-  takeProfit Float?
-  openTime   DateTime
-  closeTime  DateTime?
-  profit     Float          @default(0)
-  commission Float          @default(0)
-  swap       Float          @default(0)
-  netProfit  Float          @default(0)
-  status     TradeStatus    @default(OPEN)
-  createdAt  DateTime       @default(now())
+  id            String         @id @default(cuid())
+  accountId     String
+  account       TradingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  symbol        String
+  side          TradeSide
+  volume        Float
+  entryPrice    Float
+  exitPrice     Float?
+  stopLoss      Float?
+  takeProfit    Float?
+  openTime      DateTime
+  closeTime     DateTime?
+  profit        Float          @default(0)
+  commission    Float          @default(0)
+  swap          Float          @default(0)
+  netProfit     Float          @default(0)
+  status        TradeStatus    @default(OPEN)
+  // Set by an admin reset instead of deleting history.
+  archivedAt    DateTime?
+  // Reconciliation: the engine position this trade closed out of, and an
+  // optional external provider deal id (Option A/B adapters).
+  positionId    String?
+  externalId    String?        @unique
+  closeReason   CloseReason?
+  // Price-of-record evidence for disputes
+  entryTickTs   DateTime?
+  exitTickTs    DateTime?
+  feedSource    String?
+  quoteCurrency String?
+  // quote-currency -> account-currency rate applied at close
+  fxRate        Float?
+  createdAt     DateTime       @default(now())
 
   @@index([accountId])
   @@index([openTime])
+  @@index([accountId, openTime])
+  @@index([accountId, closeTime])
+  @@index([positionId])
+}
+
+// ---------------------------------------------------------------------------
+// Trading engine (Mella Terminal Lite)
+// ---------------------------------------------------------------------------
+
+model Instrument {
+  symbol             String             @id
+  displayName        String
+  category           InstrumentCategory @default(FOREX)
+  baseCurrency       String
+  quoteCurrency      String
+  digits             Int                @default(5)
+  contractSize       Float              @default(100000)
+  minVolume          Float              @default(0.01)
+  maxVolume          Float              @default(50)
+  volumeStep         Float              @default(0.01)
+  // Extra spread added on top of the feed, in price points (1 point = 10^-digits)
+  spreadMarkupPoints Int                @default(0)
+  // Commission per lot per side, in the account currency
+  commissionPerLot   Float              @default(0)
+  swapLongPerLot     Float              @default(0)
+  swapShortPerLot    Float              @default(0)
+  feedSource         String             @default("STUB")
+  feedSymbol         String
+  enabled            Boolean            @default(true)
+  sortOrder          Int                @default(0)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  positions Position[]
+  orders    Order[]
+
+  @@index([enabled, sortOrder])
+}
+
+model Position {
+  id           String         @id @default(cuid())
+  accountId    String
+  account      TradingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  symbol       String
+  instrument   Instrument     @relation(fields: [symbol], references: [symbol])
+  side         TradeSide
+  volume       Float
+  entryPrice   Float
+  stopLoss     Float?
+  takeProfit   Float?
+  commission   Float          @default(0)
+  swap         Float          @default(0)
+  // Last mark-to-market persisted by the engine (throttled)
+  currentPrice Float?
+  floatingPnl  Float          @default(0)
+  marginUsed   Float          @default(0)
+  status       PositionStatus @default(OPEN)
+  openedAt     DateTime       @default(now())
+  entryTickTs  DateTime?
+  feedSource   String?
+  closedAt     DateTime?
+  closePrice   Float?
+  closeReason  CloseReason?
+  updatedAt    DateTime       @updatedAt
+
+  orders Order[]
+
+  @@index([accountId, status])
+  @@index([status, symbol])
+}
+
+model Order {
+  id            String         @id @default(cuid())
+  accountId     String
+  account       TradingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  symbol        String
+  instrument    Instrument     @relation(fields: [symbol], references: [symbol])
+  // Client-generated idempotency key, unique per account
+  clientOrderId String
+  side          TradeSide
+  type          OrderType      @default(MARKET)
+  volume        Float
+  price         Float?
+  stopLoss      Float?
+  takeProfit    Float?
+  status        OrderStatus    @default(PENDING)
+  rejectReason  String?
+  filledPrice   Float?
+  filledAt      DateTime?
+  positionId    String?
+  position      Position?      @relation(fields: [positionId], references: [id])
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@unique([accountId, clientOrderId])
+  @@index([accountId, status])
+  @@index([status, symbol])
+}
+
+model Bar {
+  symbol    String
+  timeframe String
+  time      DateTime
+  open      Float
+  high      Float
+  low       Float
+  close     Float
+  volume    Int      @default(0)
+
+  @@id([symbol, timeframe, time])
+  @@index([symbol, timeframe, time(sort: Desc)])
+}
+
+model EquitySnapshot {
+  id         String         @id @default(cuid())
+  accountId  String
+  account    TradingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  at         DateTime       @default(now())
+  balance    Float
+  equity     Float
+  marginUsed Float          @default(0)
+
+  @@index([accountId, at])
+}
+
+// ---------------------------------------------------------------------------
+// Ledger / accounting
+// ---------------------------------------------------------------------------
+
+model LedgerEntry {
+  id         String          @id @default(cuid())
+  userId     String
+  user       User            @relation(fields: [userId], references: [id])
+  accountId  String?
+  account    TradingAccount? @relation(fields: [accountId], references: [id])
+  purchaseId String?
+  purchase   Purchase?       @relation(fields: [purchaseId], references: [id])
+  type       LedgerEntryType
+  // Signed amount in `currency` (ETB): credits positive, debits negative
+  amount     Float
+  currency   String          @default("ETB")
+  fxRate     Float?
+  refType    String
+  refId      String
+  note       String?
+  createdAt  DateTime        @default(now())
+
+  @@unique([type, refType, refId])
+  @@index([accountId, createdAt])
+  @@index([userId, createdAt])
+}
+
+model FxRate {
+  id          String   @id @default(cuid())
+  base        String
+  quote       String
+  rate        Float
+  source      String   @default("MANUAL")
+  effectiveAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@unique([base, quote, effectiveAt])
+  @@index([base, quote, effectiveAt(sort: Desc)])
+}
+
+model SystemSetting {
+  key         String   @id
+  value       Json
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+}
+
+model WebhookDelivery {
+  id         String   @id @default(cuid())
+  provider   String
+  eventId    String
+  receivedAt DateTime @default(now())
+
+  @@unique([provider, eventId])
 }
 
 // ---------------------------------------------------------------------------
@@ -342,10 +656,12 @@ model KycSubmission {
   providerReference String? @unique
   // Safe, normalized category (e.g. "government_data_verification_failed",
   // "abandoned") - never the provider's raw response or any identity data.
-  failureReason      String?
+  failureReason     String?
 
   @@index([status])
   @@index([userId])
+  @@index([submittedAt])
+  @@index([userId, provider, status])
 }
 
 // ---------------------------------------------------------------------------
@@ -367,6 +683,7 @@ model CrmLead {
   updatedAt DateTime   @updatedAt
 
   @@index([status])
+  @@index([createdAt])
 }
 
 model SupportTicket {
@@ -396,12 +713,29 @@ model Payout {
   userId           String
   user             User           @relation(fields: [userId], references: [id])
   amount           Float
+  currency         String         @default("ETB")
   status           PayoutStatus   @default(PENDING)
+  // Maker-checker: the admin who created/requested it can never be the one
+  // who approves it, and the approver can never be the one who marks it paid.
+  createdById      String?
+  approvedById     String?
+  paidById         String?
+  approvedAt       DateTime?
+  rejectedById     String?
+  rejectedAt       DateTime?
+  rejectReason     String?
+  // Destination details for the transfer (e.g. telebirr number), never card data
+  destination      Json?
+  providerRef      String?
+  note             String?
   requestedAt      DateTime       @default(now())
   paidAt           DateTime?
 
   @@index([status])
   @@index([userId])
+  @@index([status, paidAt])
+  @@index([requestedAt])
+  @@index([tradingAccountId, status])
 }
 
 // ---------------------------------------------------------------------------
@@ -415,10 +749,12 @@ model Notification {
   title     String
   message   String
   type      String   @default("info")
+  link      String?
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
 
   @@index([userId])
+  @@index([userId, read, createdAt])
 }
 
 model AuditLog {
@@ -430,9 +766,14 @@ model AuditLog {
   targetId   String?
   before     Json?
   after      Json?
+  ip         String?
+  userAgent  String?
+  requestId  String?
   createdAt  DateTime @default(now())
 
   @@index([actorId])
   @@index([targetType])
   @@index([createdAt])
+  @@index([targetType, targetId])
+  @@index([action, createdAt])
 }

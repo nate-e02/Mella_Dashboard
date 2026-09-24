@@ -30,12 +30,12 @@ export default async function LandingPage() {
 
       <section className="mx-auto flex max-w-4xl flex-col items-center gap-5 px-4 py-20 text-center sm:px-6">
         <span className="rounded-full border border-border bg-surface-2 px-3 py-1 text-xs font-medium uppercase tracking-wide text-muted">
-          Demo Prop Trading Platform
+          Ethiopia&apos;s prop trading firm · pay in birr
         </span>
         <h1 className="text-4xl font-semibold sm:text-5xl">Trade our capital. Keep the upside.</h1>
         <p className="max-w-2xl text-muted">
-          Pass an evaluation, get funded, and trade with up to {formatCurrency(500000)} in simulated capital. MellaFx is a local demo
-          platform — no real money or live broker connection is involved.
+          Pass an evaluation on global markets (forex, gold, crypto), get funded, and receive your profit share straight to telebirr. Prices,
+          balances and payouts are all in Ethiopian birr.
         </p>
         <div className="flex gap-3">
           <Link href="/register" className="btn-primary">
@@ -48,9 +48,9 @@ export default async function LandingPage() {
       </section>
 
       <section className="mx-auto grid max-w-5xl grid-cols-1 gap-4 px-4 pb-16 sm:grid-cols-3 sm:px-6">
-        <Feature title="Two-Phase Evaluation" description="Prove your edge across a structured evaluation before trading firm capital." />
-        <Feature title="Up to 80% Profit Split" description="Keep the majority of the profits you generate on funded accounts." />
-        <Feature title="Transparent Rules" description="Every drawdown, target, and rule is defined up front and never changes after purchase." />
+        <Feature title="Pay with telebirr or CBE Birr" description="Challenge fees are charged in ETB through Chapa. No dollars, no cards required." />
+        <Feature title="Up to 90% Profit Split" description="Keep the majority of the profits you generate, paid to your telebirr within 48 hours of approval." />
+        <Feature title="Transparent Rules" description="Every drawdown, target and rule is frozen at purchase and shown live on your dashboard. No surprises." />
       </section>
 
       <section className="mx-auto w-full max-w-6xl px-4 pb-24 sm:px-6">
@@ -82,7 +82,8 @@ export default async function LandingPage() {
       </section>
 
       <footer className="mt-auto border-t border-border py-6 text-center text-xs text-muted">
-        MellaFx is a local demo application. Payments (Chapa) and identity verification (Dojah) are real integrations; trading is simulated — no live broker connection exists.
+        MellaFx challenge accounts are simulated trading accounts evaluated on real market prices. Trading involves risk; a challenge fee is not
+        an investment. © {new Date().getFullYear()} MellaFx.
       </footer>
     </div>
   );

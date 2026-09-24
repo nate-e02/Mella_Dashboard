@@ -111,19 +111,14 @@ export const dojahKycProvider: KycProvider = {
   verifyWebhookSignature(rawBody, headers): boolean {
     const { secretKey } = getConfig();
 
+    // Only the body-bound signature is accepted. A signature computed over
+    // the secret alone would be a constant value with no binding to the
+    // request body, letting anyone who observed it once replay arbitrary
+    // payloads forever.
     const bodySignature = headers.get("x-dojah-signature");
-    if (bodySignature) {
-      const expected = createHmac("sha256", secretKey).update(rawBody).digest("hex");
-      if (safeCompare(expected, bodySignature)) return true;
-    }
-
-    const keySignature = headers.get("x-dojah-signature-v2");
-    if (keySignature) {
-      const expected = createHmac("sha256", secretKey).update(secretKey).digest("hex");
-      if (safeCompare(expected, keySignature)) return true;
-    }
-
-    return false;
+    if (!bodySignature) return false;
+    const expected = createHmac("sha256", secretKey).update(rawBody).digest("hex");
+    return safeCompare(expected, bodySignature);
   },
 
   parseWebhookPayload(rawBody) {

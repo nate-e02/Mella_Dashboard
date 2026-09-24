@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useState } from "react";
+import { createContext, useCallback, useContext, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { clsx } from "clsx";
 
@@ -9,8 +9,13 @@ type ToastContextValue = { push: (message: string, tone?: Toast["tone"]) => void
 
 const ToastContext = createContext<ToastContextValue | null>(null);
 
+const noopSubscribe = () => () => {};
+
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  // False on the server and during hydration, true afterwards: the portal is
+  // only created once the client tree matches the server HTML.
+  const mounted = useSyncExternalStore(noopSubscribe, () => true, () => false);
 
   const push = useCallback((message: string, tone: Toast["tone"] = "info") => {
     const id = Date.now() + Math.random();
@@ -21,9 +26,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastContext.Provider value={{ push }}>
       {children}
-      {typeof document !== "undefined" &&
+      {mounted &&
         createPortal(
-          <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
+          <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2" role="status" aria-live="polite">
             {toasts.map((t) => (
               <div
                 key={t.id}

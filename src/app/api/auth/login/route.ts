@@ -1,31 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { verifyPassword } from "@/lib/auth/password";
-import { createSession } from "@/lib/auth/session";
 import { loginSchema } from "@/lib/validation/schemas";
 import { withApiErrorHandling } from "@/lib/auth/guards";
+import { loginWithPassword } from "@/lib/services/auth";
 
 export async function POST(req: NextRequest) {
   return withApiErrorHandling(async () => {
-    const body = await req.json();
-    const data = loginSchema.parse(body);
+    const data = loginSchema.parse(await req.json());
+    const result = await loginWithPassword(data.email, data.password);
 
-    const user = await prisma.user.findUnique({ where: { email: data.email } });
-    if (!user) {
-      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
+    switch (result.outcome) {
+      case "INVALID":
+        return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
+      case "DISABLED":
+        return NextResponse.json({ error: "This account has been disabled. Contact support." }, { status: 403 });
+      case "MFA_REQUIRED":
+        return NextResponse.json({ mfaRequired: true });
+      case "SESSION":
+        return NextResponse.json({
+          id: result.user.id,
+          name: result.user.name,
+          email: result.user.email,
+          role: result.user.role,
+          emailVerified: !!result.user.emailVerifiedAt,
+          mfaEnabled: result.user.mfaEnabled,
+        });
     }
-
-    const valid = await verifyPassword(data.password, user.passwordHash);
-    if (!valid) {
-      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
-    }
-
-    if (user.status === "DISABLED") {
-      return NextResponse.json({ error: "This account has been disabled. Contact an administrator." }, { status: 403 });
-    }
-
-    await createSession(user.id);
-
-    return NextResponse.json({ id: user.id, name: user.name, email: user.email, role: user.role });
   });
 }

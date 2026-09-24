@@ -1,14 +1,14 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Template } from "@prisma/client";
 import { useRouter } from "next/navigation";
 import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { formatCurrency } from "@/lib/format";
+import type { StorefrontTemplate } from "@/lib/services/templates";
 
-export function ChallengesGrid({ templates }: { templates: Template[] }) {
-  const [selected, setSelected] = useState<Template | null>(null);
+export function ChallengesGrid({ templates, emailVerified }: { templates: StorefrontTemplate[]; emailVerified: boolean }) {
+  const [selected, setSelected] = useState<StorefrontTemplate | null>(null);
 
   if (templates.length === 0) {
     return (
@@ -19,7 +19,7 @@ export function ChallengesGrid({ templates }: { templates: Template[] }) {
     );
   }
 
-  const groups = new Map<string, Template[]>();
+  const groups = new Map<string, StorefrontTemplate[]>();
   for (const t of templates) {
     const arr = groups.get(t.groupName) ?? [];
     arr.push(t);
@@ -28,6 +28,11 @@ export function ChallengesGrid({ templates }: { templates: Template[] }) {
 
   return (
     <div className="flex flex-col gap-8">
+      {!emailVerified && (
+        <div className="card border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+          Verify your email address (Account page) before purchasing a challenge.
+        </div>
+      )}
       {Array.from(groups.entries()).map(([groupName, items]) => (
         <div key={groupName}>
           <h2 className="mb-3 text-lg font-semibold">{groupName}</h2>
@@ -42,15 +47,16 @@ export function ChallengesGrid({ templates }: { templates: Template[] }) {
                 <dl className="grid grid-cols-2 gap-y-1 text-xs">
                   <RuleRow label="Profit Target" value={t.profitTarget != null ? `${t.profitTarget}%` : "—"} />
                   <RuleRow label="Profit Split" value={`${t.profitSplit}%`} />
-                  <RuleRow label="Max Drawdown" value={`${t.maxDrawdown}%`} />
-                  <RuleRow label="Daily Drawdown" value={`${t.dailyDrawdown}%`} />
+                  <RuleRow label="Max Loss" value={`${t.maxDrawdown}% ${t.drawdownMode === "TRAILING" ? "(trailing)" : "(static)"}`} />
+                  <RuleRow label="Daily Loss" value={`${t.dailyDrawdown}%`} />
                   <RuleRow label="Min Trading Days" value={String(t.minTradingDays)} />
                   <RuleRow label="Leverage" value={`1:${t.leverage}`} />
                   <RuleRow label="Duration" value={t.durationDays ? `${t.durationDays}d` : "Unlimited"} />
+                  <RuleRow label="Weekend / News" value={`${t.weekendHoldingAllowed ? "✓" : "✗"} / ${t.newsTradingAllowed ? "✓" : "✗"}`} />
                 </dl>
                 <div className="mt-auto flex items-center justify-between pt-2">
                   <span className="text-xl font-semibold">{formatCurrency(t.price, t.currency)}</span>
-                  <button className="btn-primary" onClick={() => setSelected(t)}>
+                  <button className="btn-primary" onClick={() => setSelected(t)} disabled={!emailVerified}>
                     Purchase
                   </button>
                 </div>
@@ -74,15 +80,13 @@ function RuleRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function PurchaseModal({ template, onClose }: { template: Template | null; onClose: () => void }) {
+function PurchaseModal({ template, onClose }: { template: StorefrontTemplate | null; onClose: () => void }) {
   const [processing, setProcessing] = useState(false);
   const toast = useToast();
   const router = useRouter();
 
-  // One key per purchase attempt (i.e. per template selected), stable across
-  // retries of that same attempt (a failed submit followed by clicking "Pay"
-  // again reuses it) so a slow network retry or double-click can never
-  // create two payment attempts for the same checkout.
+  // One key per purchase attempt, stable across retries of that attempt, so
+  // a double-click or network retry can never create two payment attempts.
   const idempotencyKey = useMemo(() => `${template?.id}-${crypto.randomUUID()}`, [template?.id]);
 
   if (!template) return null;
@@ -96,18 +100,17 @@ function PurchaseModal({ template, onClose }: { template: Template | null; onClo
         body: JSON.stringify({ templateId: template!.id, idempotencyKey }),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(body.error || "Purchase failed");
-      }
+      if (!res.ok) throw new Error(body.error || "Purchase failed");
       if (body.outcome === "ALREADY_PAID") {
         toast.push("You already own this challenge.", "success");
         onClose();
         router.push("/purchases");
         return;
       }
-      // Hand off to Chapa's hosted checkout - the account is only created
-      // once the payment is verified server-side after checkout completes.
-      window.location.href = body.checkoutUrl;
+      // Only Chapa's hosted checkout is an acceptable destination.
+      const url = String(body.checkoutUrl ?? "");
+      if (!/^https:\/\/([a-z0-9-]+\.)*chapa\.co\//i.test(url)) throw new Error("Unexpected checkout address");
+      window.location.href = url;
     } catch (err) {
       toast.push(err instanceof Error ? err.message : "Purchase failed", "error");
       setProcessing(false);
@@ -118,18 +121,18 @@ function PurchaseModal({ template, onClose }: { template: Template | null; onClo
     <Modal open={!!template} onClose={onClose} title={`Purchase ${template.name}`}>
       <div className="flex flex-col gap-4 text-sm">
         <div className="rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-muted">
-          You&apos;ll be redirected to Chapa to complete payment securely. Your challenge activates automatically once payment is confirmed.
+          You&apos;ll be redirected to Chapa to pay with telebirr, CBE Birr, M-Pesa or a bank card. Your challenge activates automatically once payment is confirmed.
         </div>
         <div className="flex items-center justify-between rounded-lg border border-border bg-surface-2 px-4 py-3">
           <span className="text-sm text-muted">Total due</span>
-          <span className="text-xl font-semibold">{formatCurrency(template.price, "ETB")}</span>
+          <span className="text-xl font-semibold">{formatCurrency(template.price, template.currency)}</span>
         </div>
         <div className="flex justify-end gap-2">
           <button className="btn-secondary" onClick={onClose} disabled={processing}>
             Cancel
           </button>
           <button className="btn-primary" onClick={submit} disabled={processing}>
-            {processing ? "Redirecting to Chapa..." : `Pay with Chapa`}
+            {processing ? "Redirecting to Chapa..." : "Pay with Chapa"}
           </button>
         </div>
       </div>

@@ -52,13 +52,13 @@ const PURCHASE_TABS = [
   { label: "Cancelled", value: "CANCELLED" },
 ];
 
-export function CrmExplorer() {
+export function CrmExplorer({ devOverrides = false }: { devOverrides?: boolean }) {
   const [tab, setTab] = useState<"leads" | "purchased">("leads");
   const [stats, setStats] = useState({ totalLeads: 0, qualified: 0, converted: 0, revenue: 0, openTickets: 0, products: 0 });
 
   useEffect(() => {
     fetch("/api/admin/crm/stats").then((r) => r.json()).then(setStats).catch(() => undefined);
-  }, [tab]);
+  }, []);
 
   return (
     <div className="flex flex-col gap-6">
@@ -66,7 +66,7 @@ export function CrmExplorer() {
         <StatCard label="Total Leads" value={stats.totalLeads} />
         <StatCard label="Qualified" value={stats.qualified} />
         <StatCard label="Converted" value={stats.converted} tone="success" />
-        <StatCard label="Revenue" value={formatCurrency(stats.revenue)} />
+        <StatCard label="Revenue" value={formatCurrency(stats.revenue, "ETB")} />
         <StatCard label="Open Tickets" value={stats.openTickets} />
         <StatCard label="Products" value={stats.products} />
       </div>
@@ -80,7 +80,7 @@ export function CrmExplorer() {
         </button>
       </div>
 
-      {tab === "leads" ? <LeadsPanel /> : <PurchasedPanel />}
+      {tab === "leads" ? <LeadsPanel /> : <PurchasedPanel devOverrides={devOverrides} />}
     </div>
   );
 }
@@ -94,7 +94,7 @@ function LeadsPanel() {
   const columns: Column<Lead>[] = [
     { key: "name", header: "Name", render: (r) => <div><div className="font-medium">{r.name}</div><div className="text-xs text-muted">{r.email}</div></div> },
     { key: "source", header: "Source", render: (r) => r.source },
-    { key: "value", header: "Value", render: (r) => formatCurrency(r.value) },
+    { key: "value", header: "Value", render: (r) => formatCurrency(r.value, "ETB") },
     { key: "status", header: "Status", render: (r) => <StatusBadge status={r.status} /> },
     { key: "created", header: "Created", render: (r) => formatDateTime(r.createdAt) },
     { key: "actions", header: "Actions", render: (r) => <button className="btn-ghost !px-2 !py-1 text-xs" onClick={() => setSelected(r)}>Edit</button> },
@@ -185,7 +185,7 @@ function LeadModal({ lead, onClose, onSaved, isCreate }: { lead: Lead | null; on
   );
 }
 
-function PurchasedPanel() {
+function PurchasedPanel({ devOverrides }: { devOverrides: boolean }) {
   const [status, setStatus] = useState("ALL");
   const { search, setSearch, setPage, data, loading, error, refetch } = useServerTable<PurchaseRow>("/api/admin/crm/purchased", { status });
   const toast = useToast();
@@ -242,7 +242,7 @@ function PurchasedPanel() {
             </div>
           );
         }
-        if (r.status === "PENDING" || r.status === "FAILED") {
+        if (devOverrides && (r.status === "PENDING" || r.status === "FAILED")) {
           return (
             <button
               className="btn-ghost !px-2 !py-1 text-xs text-success"

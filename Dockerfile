@@ -5,7 +5,7 @@
 # Database migrations run as a separate one-shot container from the worker
 # image (see the `migrate` service in docker-compose.yml) before web/worker start.
 
-FROM node:22-bookworm-slim AS base
+FROM node:25-bookworm-slim AS base
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates curl && rm -rf /var/lib/apt/lists/*

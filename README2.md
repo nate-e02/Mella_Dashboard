@@ -46,15 +46,18 @@ npx prisma db seed
 npm run dev                         # http://localhost:3000  (or: npx next dev -p 3200)
 
 # 5. Terminal 2 - trading worker (price feeds, execution, risk engine, WebSocket on :4100)
-set -a && . ./.env && set +a && SEED_DEFAULT_INSTRUMENTS=true FEED_SOURCES_OVERRIDE=STUB npm run worker
+set -a && . ./.env && set +a && SEED_DEFAULT_INSTRUMENTS=true npm run worker
 ```
-`FEED_SOURCES_OVERRIDE=STUB` uses simulated prices. Remove it once the cTrader credentials are set (section 6).
+Feeds come from each instrument's settings: FX/metals = cTrader (backup TraderMade), crypto = Binance. Connect cTrader once on Admin → Trading Engine (section 6). Until then, for simulated FX prices:
+```bash
+npx prisma db execute --stdin <<< "UPDATE \"Instrument\" SET \"feedSource\"='STUB', \"backupFeedSource\"=NULL WHERE category <> 'CRYPTO';"
+```
 
 To change the database later: edit `prisma/schema.prisma`, then run `npx prisma migrate dev --name <what-changed>`. That creates the migration file and applies it. Commit the new file under `prisma/migrations/`; CI fails if the schema and the migrations disagree.
 
 ### Full stack in Docker (the same images production uses)
 ```bash
-FEED_SOURCES_OVERRIDE=STUB docker compose --profile app up -d --build
+docker compose --profile app up -d --build
 docker compose run --rm migrate npx prisma db seed     # demo data, first time only
 ```
 This starts:
@@ -201,7 +204,7 @@ Database migration for this round: `prisma/migrations/20260924090000_phone_i18n_
 |---|---|---|---|---|
 | 1 | **Chapa live merchant account.** Enable Transfers for payouts. In Dashboard → Webhooks, register `https://<domain>/api/payments/chapa/webhook` with a secret hash. | Real payments | `CHAPA_SECRET_KEY`, `CHAPA_WEBHOOK_SECRET` (+ public/encryption keys) | Per-transaction fee |
 | 2 | **SMS gateway**: AfroMessage recommended. Register the sender name "MellaFx" (the Ethiopian Communications Authority, ECA, must approve it). | Phone login and alerts; phone login is **off** in production without it | `SMS_PROVIDER=afromessage`, `AFROMESSAGE_TOKEN`, `AFROMESSAGE_IDENTIFIER_ID`, `AFROMESSAGE_SENDER_NAME` | About 0.3–0.6 birr per SMS |
-| 3 | **cTrader Open API**: register an app at openapi.ctrader.com, and open a free demo account with a broker that offers cTrader. | Real live prices (free) | `CTRADER_*`; remove `FEED_SOURCES_OVERRIDE` | Free |
+| 3 | **cTrader Open API**: register an app at openapi.ctrader.com, and open a free demo account with a broker that offers cTrader. | Real live prices (free) | `CTRADER_CLIENT_ID`, `CTRADER_CLIENT_SECRET`, `CTRADER_REDIRECT_URI` (register it in the app), then **Connect cTrader** on Admin → Trading Engine | Free |
 | 4 | **Backup price feed** (TraderMade or similar) before real money depends on prices | Failover when cTrader stops | `TRADERMADE_API_KEY`, then set the backup per instrument on Admin → Trading Engine | About $100–300/month |
 | 5 | **Fayda eKYC** partner application (partner.fayda.et, about 2 working days) | Identity checks before payouts | KYC provider (Dojah is the current fallback: `DOJAH_*`) | Per NIDP terms |
 | 6 | **Email sender** (Resend or similar) + domain DNS (SPF/DKIM) | Verification and reset emails | `RESEND_API_KEY`, `EMAIL_FROM` | Free tier, then about $20/month |
@@ -271,7 +274,7 @@ browser: lightweight-charts terminal at /trade (chart, order ticket, positions, 
 | Option | Cost | Can we show it to customers? | Use |
 |---|---|---|---|
 | **cTrader Open API + a broker demo account** | **Free** | **Yes**: their terms allow apps for your customers | **Main feed.** Adapter built (`src/trading/feeds/ctrader.ts`); add the credentials. |
-| Binance public stream | Free | Public market data | Crypto pairs; already works (`ALLOW_BINANCE=true`) |
+| Binance public stream | Free | Public market data | Crypto pairs; already works |
 | **TraderMade streaming** | About $100–300/month (check current pricing) | Yes, on commercial plans | **Best paid backup.** Adapter + failover built. |
 | Massive (formerly Polygon) currencies, Twelve Data | About $50–200+/month | Only on business or commercial tiers | Alternative backup |
 | FXCM ForexConnect | Ask for a quote | With a data licence | Alternative |
@@ -288,7 +291,7 @@ browser: lightweight-charts terminal at /trade (chart, order ticket, positions, 
 | ChartIQ | Expensive commercial licence | Not worth it at this stage |
 
 ### Recommended path
-1. **Now:** get cTrader Open API credentials (free), remove `FEED_SOURCES_OVERRIDE`, and keep Binance for crypto.
+1. **Now:** set the cTrader app credentials and redirect URI, click **Connect cTrader** on Admin → Trading Engine, and keep Binance for crypto.
 2. **Before real money depends on prices:** add TraderMade as the backup (Admin → Trading Engine → backup feed per instrument). Failover is automatic.
 3. **In parallel:** apply for TradingView Advanced Charts, and replace lightweight-charts once approved.
 

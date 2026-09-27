@@ -95,6 +95,8 @@ export async function main() {
   const router = new FeedRouter({
     staleMs: Number(process.env.FEED_FAILOVER_STALE_MS) || DEFAULT_FAILOVER_STALE_MS,
     stableMs: Number(process.env.FEED_FAILBACK_STABLE_MS) || DEFAULT_FAILBACK_STABLE_MS,
+    // Return to the primary only at a new 1-minute candle so a planned failback never splits a bar.
+    failbackAlignMs: 60_000,
   });
   router.onTick((tick) => bus.emit("tick", tick));
   // One ops alert per burst of switches (a provider outage flips every symbol it serves at once).

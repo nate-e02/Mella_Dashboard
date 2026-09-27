@@ -18,6 +18,7 @@ export async function setInstrumentBackupFeed(symbol: string, input: { backupFee
   const feedSymbol = input.backupFeedSymbol?.trim() || null;
   if (source && !FEED_SOURCE_PATTERN.test(source)) throw new ConflictError(`Unknown feed source ${source} (STUB, STUB2, BINANCE, CTRADER or TRADERMADE)`);
   if (source && source === before.feedSource.toUpperCase()) throw new ConflictError("The backup feed must differ from the primary feed");
+  if (source && before.category === "CRYPTO" && (source === "TRADERMADE" || source === "CTRADER")) throw new ConflictError("Crypto instruments stay on Binance; cTrader and TraderMade are FX/metals feeds only");
   const updated = await prisma.instrument.update({
     where: { symbol },
     data: { backupFeedSource: source, backupFeedSymbol: source ? feedSymbol : null },

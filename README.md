@@ -42,9 +42,12 @@ Demo logins (development passwords, override with `SEED_ADMIN_PASSWORD` / `SEED_
 ### 4. Run the web app and the trading worker (two terminals)
 ```bash
 npm run dev                                      # http://localhost:3000
-FEED_SOURCES_OVERRIDE=STUB npm run worker        # feeds + engine + ws gateway on :4100 (simulated prices)
+set -a && . ./.env && set +a && npm run worker   # feeds + engine + ws gateway on :4100
 ```
-Log in as a trader, open **Trade**: the chart, prices, order ticket and account bar update live over the WebSocket. To use real cTrader prices set the `CTRADER_*` variables (see `.env.example`) and drop `FEED_SOURCES_OVERRIDE`. Crypto uses Binance's public stream when `ALLOW_BINANCE=true`.
+Log in as a trader, open **Trade**: the chart, prices, order ticket and account bar update live over the WebSocket. Feeds are chosen per instrument (Admin → Trading Engine): FX/metals use cTrader with TraderMade as automatic backup, crypto uses Binance's public stream. Set `CTRADER_CLIENT_ID`, `CTRADER_CLIENT_SECRET`, `CTRADER_REDIRECT_URI` and click **Connect cTrader** on Admin → Trading Engine. Without cTrader, switch the FX rows to simulated prices:
+```bash
+npx prisma db execute --stdin <<< "UPDATE \"Instrument\" SET \"feedSource\"='STUB', \"backupFeedSource\"=NULL WHERE category <> 'CRYPTO';"
+```
 
 ### 5. Tests, lint, types
 ```bash
@@ -55,7 +58,7 @@ npm run typecheck
 
 ## Run with Docker (full stack)
 ```bash
-FEED_SOURCES_OVERRIDE=STUB docker compose --profile app up -d --build   # db, redis, web (:3000), worker (:4100)
+docker compose --profile app up -d --build   # db, redis, web (:3000), worker (:4100)
 # host ports are configurable: WEB_PORT, WORKER_HOST_PORT, POSTGRES_PORT, REDIS_PORT; set WS_PUBLIC_URL to match
 docker compose run --rm migrate npx prisma db seed   # optional demo data (development only)
 ```

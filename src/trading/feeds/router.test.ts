@@ -172,3 +172,40 @@ describe("FeedRouter", () => {
     expect(switches.map((s) => s.symbol)).toEqual(["EURUSD"]);
   });
 });
+
+describe("FeedRouter aligned failback", () => {
+  const tick = (symbol: string, source: string, bid: number): Tick => ({ symbol, bid, ask: bid + 0.0001, ts: 0, source });
+
+  it("returns to the primary only at the next candle boundary, never mid-bar", () => {
+    let now = 1_000_000_020_000; // 20 s into a minute
+    const router = new FeedRouter({ now: () => now, staleMs: 3_000, stableMs: 10_000, failbackAlignMs: 60_000 });
+    const out: Tick[] = [];
+    router.onTick((t) => out.push(t));
+    router.setRoutes([{ symbol: "EURUSD", primary: "CTRADER", backup: "TRADERMADE" }]);
+    router.ingest("CTRADER", tick("EURUSD", "CTRADER", 1.1));
+    // primary goes silent, backup keeps ticking -> immediate failover
+    for (let i = 0; i < 5; i++) {
+      now += 1_000;
+      router.ingest("TRADERMADE", tick("EURUSD", "TRADERMADE", 1.2));
+      router.evaluate();
+    }
+    expect(router.activeSource("EURUSD")).toBe("TRADERMADE");
+    // primary healthy again for longer than stableMs, still inside the same minute
+    for (let i = 0; i < 12; i++) {
+      now += 1_000;
+      router.ingest("CTRADER", tick("EURUSD", "CTRADER", 1.1));
+      router.ingest("TRADERMADE", tick("EURUSD", "TRADERMADE", 1.2));
+    }
+    expect(Math.floor(now / 60_000)).toBe(Math.floor(1_000_000_020_000 / 60_000));
+    expect(router.activeSource("EURUSD")).toBe("TRADERMADE");
+    // first evaluation in the next minute switches back
+    while (Math.floor(now / 60_000) === Math.floor(1_000_000_020_000 / 60_000)) {
+      now += 1_000;
+      router.ingest("CTRADER", tick("EURUSD", "CTRADER", 1.1));
+      router.ingest("TRADERMADE", tick("EURUSD", "TRADERMADE", 1.2));
+    }
+    expect(router.activeSource("EURUSD")).toBe("CTRADER");
+    expect(router.recentSwitches()[0]).toMatchObject({ from: "TRADERMADE", to: "CTRADER", reason: "PRIMARY_RECOVERED" });
+    expect(router.recentSwitches()[0].at % 60_000).toBeLessThan(1_000);
+  });
+});

@@ -5,6 +5,16 @@ import { EngineControls } from "@/components/admin/EngineControls";
 import { BackupFeedEditor } from "@/components/admin/BackupFeedEditor";
 import { StatCard } from "@/components/ui/Card";
 import { formatDateTime } from "@/lib/format";
+import { ctraderAuthStatus } from "@/lib/services/ctraderAuth";
+
+const CTRADER_RESULT: Record<string, string> = {
+  connected: "cTrader connected. The worker starts the cTrader feed within 30 seconds.",
+  denied: "cTrader access was not granted.",
+  state_mismatch: "cTrader connection expired or was started in another browser. Click Connect cTrader again.",
+  missing_code: "cTrader did not return an authorization code. Try again.",
+  no_account: "The cTrader login has no trading account. Open a demo account with a cTrader broker, then connect again.",
+  failed: "Connecting cTrader failed. Check CTRADER_CLIENT_ID / CTRADER_CLIENT_SECRET / CTRADER_REDIRECT_URI and the server log.",
+};
 
 export const dynamic = "force-dynamic";
 
@@ -49,13 +59,16 @@ function age(ms: number | null | undefined, now: number): string {
   return s < 90 ? `${s}s ago` : `${Math.round(s / 60)}m ago`;
 }
 
-export default async function AdminTradingEnginePage() {
+export default async function AdminTradingEnginePage({ searchParams }: { searchParams: Promise<{ ctrader?: string }> }) {
   await requireAdminPage();
-  const [status, instruments, openPositions] = await Promise.all([
+  const [status, instruments, openPositions, ctrader, query] = await Promise.all([
     workerRequest<WorkerStatus>("/status"),
     prisma.instrument.findMany({ orderBy: { sortOrder: "asc" } }),
     prisma.position.count({ where: { status: "OPEN" } }),
+    ctraderAuthStatus(),
+    searchParams,
   ]);
+  const ctraderResult = query.ctrader ? CTRADER_RESULT[query.ctrader] : undefined;
   const s = status.data ?? null;
   const engine = s?.engine ?? null;
   const rawState = engine?.marketState ?? null;
@@ -80,6 +93,33 @@ export default async function AdminTradingEnginePage() {
           worker container) and check WORKER_INTERNAL_TOKEN.
         </div>
       )}
+
+      {ctraderResult && (
+        <div role="status" className={`card px-4 py-3 text-sm ${query.ctrader === "connected" ? "border-success/30 bg-success/10 text-success" : "border-danger/30 bg-danger/10 text-danger"}`}>
+          {ctraderResult}
+        </div>
+      )}
+
+      <div className="card flex flex-col justify-between gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center">
+        <div>
+          <span className="font-semibold">cTrader (FX &amp; metals feed): </span>
+          {!ctrader.appConfigured ? (
+            <span className="text-danger">CTRADER_CLIENT_ID / CTRADER_CLIENT_SECRET not set</span>
+          ) : ctrader.connected ? (
+            <span className="text-success">
+              connected{ctrader.accountId ? ` · ${ctrader.isLive ? "live" : "demo"} account ${ctrader.accountId}` : ""}
+              {ctrader.expiresAt ? ` · token renews automatically (expires ${formatDateTime(new Date(ctrader.expiresAt))})` : ""}
+            </span>
+          ) : (
+            <span className="text-warning">not connected{ctrader.redirectUri ? "" : " · set CTRADER_REDIRECT_URI"}</span>
+          )}
+        </div>
+        {ctrader.appConfigured && ctrader.redirectUri && (
+          <a href="/api/admin/ctrader/connect" className="btn-secondary !py-1.5 text-xs">
+            {ctrader.connected ? "Reconnect cTrader" : "Connect cTrader"}
+          </a>
+        )}
+      </div>
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
         <StatCard label="Market" value={marketState ?? "—"} sublabel={engine?.manualHalt ? "manual halt" : marketReason} tone={marketState === "OPEN" ? "success" : "danger"} />
@@ -142,10 +182,10 @@ export default async function AdminTradingEnginePage() {
                     <td className="px-4 py-2.5 text-xs">
                       <div className="flex items-center gap-1">
                         <span>{i.backupFeedSource ? `${i.backupFeedSource}${i.backupFeedSymbol ? ` · ${i.backupFeedSymbol}` : ""}` : "—"}</span>
-                        <BackupFeedEditor symbol={i.symbol} primary={i.feedSource} backupSource={i.backupFeedSource} backupSymbol={i.backupFeedSymbol} />
+                        <BackupFeedEditor symbol={i.symbol} category={i.category} primary={i.feedSource} backupSource={i.backupFeedSource} backupSymbol={i.backupFeedSymbol} />
                       </div>
                       {feed?.backup && <div className="text-[10px] text-muted">{feed.backup !== i.backupFeedSource ? `effective ${feed.backup} · ` : ""}{age(feed.backupLastTickAt, now)}</div>}
-                      {i.backupFeedSource && feed && !feed.backup && <div className="text-[10px] text-muted">inactive (FEED_SOURCES_OVERRIDE)</div>}
+                      {i.backupFeedSource && feed && !feed.backup && <div className="text-[10px] text-muted">inactive</div>}
                     </td>
                     <td className={`px-4 py-2.5 text-xs ${stale ? "text-danger" : "text-success"}`}>{last ? formatDateTime(last) : "no data"}</td>
                     <td className="px-4 py-2.5 text-xs text-muted">{i.contractSize}</td>

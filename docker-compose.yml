@@ -81,7 +81,6 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-mellafx}:${POSTGRES_PASSWORD:-mellafx_dev_password}@db:5432/${POSTGRES_DB:-mellafx}?schema=public
       REDIS_URL: redis://redis:6379
       WORKER_PORT: "4100"
-      FEED_SOURCES_OVERRIDE: ${FEED_SOURCES_OVERRIDE:-}
       SEED_DEFAULT_INSTRUMENTS: ${SEED_DEFAULT_INSTRUMENTS:-true}
     ports:
       - "${WORKER_HOST_PORT:-4100}:4100"

@@ -8,7 +8,19 @@ import { useToast } from "@/components/ui/Toast";
 const SOURCES = ["", "TRADERMADE", "CTRADER", "BINANCE", "STUB2"] as const;
 
 /** Sets or clears an instrument's hot-standby feed (PATCH /api/admin/instruments/[symbol], audited). */
-export function BackupFeedEditor({ symbol, primary, backupSource, backupSymbol }: { symbol: string; primary: string; backupSource: string | null; backupSymbol: string | null }) {
+export function BackupFeedEditor({
+  symbol,
+  category,
+  primary,
+  backupSource,
+  backupSymbol,
+}: {
+  symbol: string;
+  category?: string;
+  primary: string;
+  backupSource: string | null;
+  backupSymbol: string | null;
+}) {
   const [open, setOpen] = useState(false);
   const [source, setSource] = useState(backupSource ?? "");
   const [feedSymbol, setFeedSymbol] = useState(backupSymbol ?? "");
@@ -37,7 +49,8 @@ export function BackupFeedEditor({ symbol, primary, backupSource, backupSymbol }
     }
   }
 
-  const options = SOURCES.filter((s) => s !== primary.toUpperCase());
+  // Crypto stays on Binance: cTrader and TraderMade are FX/metals feeds only.
+  const options = SOURCES.filter((s) => s !== primary.toUpperCase() && !(category === "CRYPTO" && (s === "TRADERMADE" || s === "CTRADER")));
   return (
     <>
       <button type="button" className="btn-ghost !px-2 !py-0.5 text-[11px]" onClick={() => setOpen(true)} aria-label={`Edit backup feed for ${symbol}`}>

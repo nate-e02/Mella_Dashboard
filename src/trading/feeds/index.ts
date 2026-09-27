@@ -1,4 +1,5 @@
 import { BinanceProvider } from "./binance";
+import { loadCTraderConfig, refreshStoredCTraderAuthIfNeeded } from "@/lib/services/ctraderAuth";
 import { CTraderProvider } from "./ctrader";
 import { StubProvider } from "./stub";
 import { TraderMadeProvider } from "./tradermade";
@@ -22,7 +23,7 @@ export function createProvider(source: string, opts: { log?: FeedLogger; stubSee
     case "BINANCE":
       return new BinanceProvider({ log: opts.log });
     case "CTRADER":
-      return new CTraderProvider({ log: opts.log });
+      return new CTraderProvider({ log: opts.log, loadConfig: () => loadCTraderConfig(), maintainToken: (o) => refreshStoredCTraderAuthIfNeeded(o) });
     case "TRADERMADE":
       return new TraderMadeProvider({ log: opts.log });
     default:

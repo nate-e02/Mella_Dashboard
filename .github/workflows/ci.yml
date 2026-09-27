@@ -124,6 +124,10 @@ jobs:
       - run: npx prisma migrate deploy
       - name: Seed demo data
         run: npx prisma db seed
+      - name: Use the simulated feed for FX/metals (no cTrader credentials in CI)
+        run: |
+          echo "UPDATE \"Instrument\" SET \"feedSource\"='STUB', \"backupFeedSource\"=NULL WHERE category <> 'CRYPTO';" \
+            | npx prisma db execute --stdin --schema prisma/schema.prisma
       - name: Build
         run: npm run build
       - name: Start web (production mode) and trading worker (simulated feed)
@@ -131,7 +135,7 @@ jobs:
           # Same artefact the Docker web image runs: the standalone server plus static assets.
           cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/
           PORT=3000 HOSTNAME=127.0.0.1 nohup node .next/standalone/server.js > web.log 2>&1 &
-          SEED_DEFAULT_INSTRUMENTS=true FEED_SOURCES_OVERRIDE=STUB LOG_PRETTY=false NODE_ENV=production nohup npm run worker > worker.log 2>&1 &
+          SEED_DEFAULT_INSTRUMENTS=true LOG_PRETTY=false NODE_ENV=production nohup npm run worker > worker.log 2>&1 &
           for i in $(seq 1 60); do
             curl -fsS http://localhost:3000/api/health >/dev/null 2>&1 && curl -fsS http://localhost:4100/health >/dev/null 2>&1 && exit 0
             sleep 2

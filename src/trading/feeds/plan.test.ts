@@ -33,17 +33,23 @@ describe("feed plan", () => {
     expect(groups.get("BINANCE")).toEqual([{ symbol: "BTCUSD", feedSymbol: "BTCUSDT", digits: 5 }]);
   });
 
-  it("keeps the FEED_SOURCES_OVERRIDE=STUB dev behaviour and lets extra stub instances act as backups", () => {
-    const env = { FEED_SOURCES_OVERRIDE: "STUB" };
-    expect(effectiveFeedSource({ feedSource: "CTRADER" }, env)).toBe("STUB");
-    expect(effectiveFeedSource({ feedSource: "BINANCE" }, env)).toBe("STUB");
-    expect(effectiveFeedSource({ feedSource: "BINANCE" }, { ...env, ALLOW_BINANCE: "true" })).toBe("BINANCE");
-    // Licensed backups collapse onto the stub primary: no backup in dev.
-    expect(effectiveBackupSource({ feedSource: "CTRADER", backupFeedSource: "TRADERMADE" }, env)).toBeNull();
-    expect(effectiveBackupSource({ feedSource: "STUB", backupFeedSource: "STUB2" }, env)).toBe("STUB2");
+  it("selects providers from the instrument rows only (no environment override)", () => {
+    const env = { FEED_SOURCES_OVERRIDE: "STUB", ALLOW_BINANCE: "false" };
+    expect(effectiveFeedSource({ feedSource: "CTRADER" }, env)).toBe("CTRADER");
+    expect(effectiveFeedSource({ feedSource: "binance" }, env)).toBe("BINANCE");
+    expect(effectiveBackupSource({ feedSource: "CTRADER", backupFeedSource: "TRADERMADE" }, env)).toBe("TRADERMADE");
+    // Development/CI rows set to the simulated feed keep STUB -> STUB2 failover.
     const { routes, groups } = planFeeds([inst("EURUSD", "STUB", "STUB2", { feedSymbol: "EUR/USD" })], env);
     expect(routes).toEqual([{ symbol: "EURUSD", primary: "STUB", backup: "STUB2" }]);
     expect(groups.get("STUB2")).toEqual([{ symbol: "EURUSD", feedSymbol: "EURUSD", digits: 5 }]);
+  });
+
+  it("never routes crypto through cTrader or TraderMade", () => {
+    expect(effectiveBackupSource({ feedSource: "BINANCE", backupFeedSource: "TRADERMADE", category: "CRYPTO" }, {})).toBeNull();
+    expect(effectiveBackupSource({ feedSource: "BINANCE", backupFeedSource: "CTRADER", category: "CRYPTO" }, {})).toBeNull();
+    const { routes, groups } = planFeeds([{ ...inst("BTCUSD", "BINANCE", "TRADERMADE", { feedSymbol: "BTCUSDT" }), category: "CRYPTO" }], {});
+    expect(routes).toEqual([{ symbol: "BTCUSD", primary: "BINANCE", backup: null }]);
+    expect(groups.has("TRADERMADE")).toBe(false);
   });
 
   it("ignores blank or self-referencing backups and keys subscriptions by symbol and provider symbol", () => {

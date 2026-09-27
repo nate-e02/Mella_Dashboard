@@ -56,6 +56,13 @@ export type FeedRouterOptions = {
   stableMs?: number;
   /** Switch events kept for /status. */
   historySize?: number;
+  /**
+   * When > 0, a planned failback (PRIMARY_RECOVERED) waits for the next
+   * boundary of this bucket size (the worker passes 60 000 = the 1-minute
+   * candle) so one bar never mixes the two providers because of a failback.
+   * Emergency switches (primary or backup stale) happen immediately.
+   */
+  failbackAlignMs?: number;
 };
 
 export const DEFAULT_FAILOVER_STALE_MS = 3_000;
@@ -70,11 +77,14 @@ type SymbolState = {
   last: Map<string, { at: number; tick: Tick }>;
   primaryHealthySince: number | null;
   switches: number;
+  /** Bucket in which failback became due (aligned failback switches in the next bucket). */
+  failbackDueBucket: number | null;
 };
 
 export class FeedRouter {
   readonly staleMs: number;
   readonly stableMs: number;
+  readonly failbackAlignMs: number;
   private readonly now: () => number;
   private readonly historySize: number;
   private symbols = new Map<string, SymbolState>();
@@ -87,6 +97,7 @@ export class FeedRouter {
     this.staleMs = positive(opts.staleMs, DEFAULT_FAILOVER_STALE_MS);
     this.stableMs = positive(opts.stableMs, DEFAULT_FAILBACK_STABLE_MS);
     this.historySize = opts.historySize ?? 50;
+    this.failbackAlignMs = opts.failbackAlignMs != null && opts.failbackAlignMs > 0 ? opts.failbackAlignMs : 0;
   }
 
   onTick(cb: (t: Tick) => void): void {
@@ -121,6 +132,7 @@ export class FeedRouter {
         last,
         primaryHealthySince: primaryLast != null && now - primaryLast <= this.staleMs ? primaryLast : null,
         switches: existing?.switches ?? 0,
+        failbackDueBucket: null,
       });
     }
     for (const s of Array.from(this.symbols.keys())) if (!seen.has(s)) this.symbols.delete(s);
@@ -196,7 +208,14 @@ export class FeedRouter {
       return;
     }
     // On the backup.
-    if (primaryFresh && st.primaryHealthySince != null && now - st.primaryHealthySince >= this.stableMs) {
+    const primaryStable = primaryFresh && st.primaryHealthySince != null && now - st.primaryHealthySince >= this.stableMs;
+    if (!primaryStable) st.failbackDueBucket = null;
+    if (primaryStable) {
+      if (this.failbackAlignMs > 0) {
+        const bucket = Math.floor(now / this.failbackAlignMs);
+        if (st.failbackDueBucket == null) st.failbackDueBucket = bucket;
+        if (bucket <= st.failbackDueBucket && backupFresh) return;
+      }
       this.switchTo(st, primary, "PRIMARY_RECOVERED", now);
     } else if (primaryFresh && !backupFresh) {
       this.switchTo(st, primary, "BACKUP_STALE", now);
@@ -205,6 +224,7 @@ export class FeedRouter {
 
   private switchTo(st: SymbolState, to: string, reason: FeedSwitchReason, now: number) {
     const from = st.active;
+    st.failbackDueBucket = null;
     st.active = to;
     st.activeSince = now;
     st.switches += 1;

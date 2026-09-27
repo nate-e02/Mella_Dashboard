@@ -35,6 +35,8 @@ export const CT = {
   GET_TRENDBARS_RES: 2138,
   ERROR_RES: 2142,
   ACCOUNTS_TOKEN_INVALIDATED_EVENT: 2147,
+  GET_ACCOUNTS_BY_ACCESS_TOKEN_REQ: 2149,
+  GET_ACCOUNTS_BY_ACCESS_TOKEN_RES: 2150,
   CLIENT_DISCONNECT_EVENT: 2148,
   ACCOUNT_DISCONNECT_EVENT: 2164,
 } as const;
@@ -243,34 +245,98 @@ export class CTraderProvider implements MarketDataProvider {
   private pending = new Map<string, Pending>();
   private heartbeat: NodeJS.Timeout | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private configTimer: NodeJS.Timeout | null = null;
+  private tokenTimer: NodeJS.Timeout | null = null;
   private readonly log: FeedLogger;
-  private readonly cfg: CTraderConfig | null;
+  private cfg: CTraderConfig | null;
+  private readonly loadConfig: (() => Promise<CTraderConfig | null>) | null;
+  private readonly maintainToken: ((opts: { force?: boolean }) => Promise<boolean>) | null;
 
-  constructor(opts: { config?: CTraderConfig | null; log?: FeedLogger } = {}) {
+  /**
+   * `loadConfig` (the worker passes the OAuth store, src/lib/services/ctraderAuth.ts)
+   * is polled every 30 s: the feed starts once an admin connects cTrader and
+   * reconnects when the token or account changes. `maintainToken` refreshes the
+   * access token before it expires and after the server invalidates it.
+   */
+  constructor(
+    opts: {
+      config?: CTraderConfig | null;
+      log?: FeedLogger;
+      loadConfig?: () => Promise<CTraderConfig | null>;
+      maintainToken?: (opts: { force?: boolean }) => Promise<boolean>;
+    } = {},
+  ) {
     this.log = opts.log ?? silentLogger;
+    this.loadConfig = opts.config === undefined ? (opts.loadConfig ?? null) : null;
+    this.maintainToken = opts.maintainToken ?? null;
     this.cfg = opts.config === undefined ? readCTraderConfigFromEnv() : opts.config;
   }
 
   async start(symbols: FeedSymbol[]): Promise<void> {
     this.symbols = symbols;
     this.stopping = false;
-    if (!this.cfg) {
-      this.log.warn(
-        {},
-        "ctrader: CTRADER_CLIENT_ID / CTRADER_CLIENT_SECRET / CTRADER_ACCESS_TOKEN / CTRADER_ACCOUNT_ID are not all set - the cTrader feed will NOT start. Set FEED_SOURCES_OVERRIDE=STUB for local development.",
-      );
-      return;
-    }
     if (symbols.length === 0) {
       this.log.warn({}, "ctrader: no symbols to subscribe");
       return;
     }
-    this.connect();
+    if (this.loadConfig) {
+      await this.syncConfig();
+      this.configTimer = setInterval(() => void this.syncConfig(), 30_000);
+    }
+    if (this.maintainToken) {
+      void this.runTokenMaintenance({});
+      this.tokenTimer = setInterval(() => void this.runTokenMaintenance({}), 6 * 3_600_000);
+    }
+    if (!this.cfg) {
+      this.log.warn(
+        {},
+        "ctrader: not connected yet - set CTRADER_CLIENT_ID / CTRADER_CLIENT_SECRET / CTRADER_REDIRECT_URI and click Connect cTrader on Admin -> Trading Engine. The cTrader feed starts automatically once connected.",
+      );
+      return;
+    }
+    if (!this.socket) this.connect();
+  }
+
+  /** Picks up a newly connected or rotated token/account and (re)connects. */
+  private async syncConfig() {
+    if (!this.loadConfig || this.stopping) return;
+    let next: CTraderConfig | null;
+    try {
+      next = await this.loadConfig();
+    } catch (err) {
+      this.log.warn({ err: (err as Error).message }, "ctrader: could not load credentials");
+      return;
+    }
+    const prev = this.cfg;
+    const changed = !prev !== !next || (prev && next && (prev.accessToken !== next.accessToken || prev.accountId !== next.accountId || prev.host !== next.host));
+    if (!changed) return;
+    this.cfg = next;
+    if (!next) return;
+    if (prev) this.log.info({ accountId: next.accountId, host: next.host }, "ctrader: credentials changed, reconnecting");
+    else this.log.info({ accountId: next.accountId, host: next.host }, "ctrader: credentials found, connecting");
+    if (this.socket) this.socket.terminate();
+    else if (!this.reconnectTimer) this.connect();
+  }
+
+  private async runTokenMaintenance(opts: { force?: boolean }) {
+    if (!this.maintainToken || this.stopping) return;
+    try {
+      if (await this.maintainToken(opts)) {
+        this.log.info({ forced: !!opts.force }, "ctrader: access token refreshed");
+        await this.syncConfig();
+      }
+    } catch (err) {
+      this.log.error({ err: (err as Error).message }, "ctrader: access token refresh failed");
+    }
   }
 
   async stop(): Promise<void> {
     this.stopping = true;
     this.clearTimers();
+    if (this.configTimer) clearInterval(this.configTimer);
+    if (this.tokenTimer) clearInterval(this.tokenTimer);
+    this.configTimer = null;
+    this.tokenTimer = null;
     for (const p of this.pending.values()) {
       clearTimeout(p.timer);
       p.reject(new Error("ctrader: provider stopped"));
@@ -381,7 +447,10 @@ export class CTraderProvider implements MarketDataProvider {
         }
       }, 10_000);
       void this.authenticateAndSubscribe().catch((err) => {
-        this.log.error({ err: (err as Error).message }, "ctrader: session setup failed, reconnecting");
+        const message = (err as Error).message;
+        this.log.error({ err: message }, "ctrader: session setup failed, reconnecting");
+        // An expired/revoked access token fails account auth: refresh before the next attempt.
+        if (/account auth failed/.test(message) && /TOKEN/i.test(message)) void this.runTokenMaintenance({ force: true });
         socket.terminate();
       });
     });
@@ -396,7 +465,10 @@ export class CTraderProvider implements MarketDataProvider {
       if (this.stopping) return;
       const delay = backoffDelay(this.attempt++);
       this.log.warn({ code, reason: reason.toString(), delay }, "ctrader: disconnected, reconnecting");
-      this.reconnectTimer = setTimeout(() => this.connect(), delay);
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        this.connect();
+      }, delay);
     });
   }
 
@@ -463,6 +535,10 @@ export class CTraderProvider implements MarketDataProvider {
       case CT.HEARTBEAT_EVENT:
         return;
       case CT.ACCOUNTS_TOKEN_INVALIDATED_EVENT:
+        this.log.error({ payloadType: env.payloadType }, "ctrader: access token invalidated by server, refreshing and reconnecting");
+        void this.runTokenMaintenance({ force: true });
+        this.socket?.terminate();
+        return;
       case CT.ACCOUNT_DISCONNECT_EVENT:
       case CT.CLIENT_DISCONNECT_EVENT:
         this.log.error({ payloadType: env.payloadType, payload: env.payload }, "ctrader: session invalidated by server, reconnecting");

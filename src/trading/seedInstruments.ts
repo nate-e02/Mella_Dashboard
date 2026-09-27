@@ -3,9 +3,9 @@ import { prisma } from "@/lib/prisma";
 
 /**
  * Default instrument catalogue. FX/metals come from cTrader (feedSymbol =
- * our symbol, which the STUB feed also understands); crypto from the Binance
- * public stream (feedSymbol = Binance pair, quoted in USDT which fx.ts treats
- * as USD).
+ * our symbol, which the STUB feed also understands) with TraderMade as the
+ * automatic backup; crypto from the Binance public stream (feedSymbol =
+ * Binance pair, quoted in USDT which fx.ts treats as USD), no backup.
  */
 
 const fx = (symbol: string, sortOrder: number, extra: Partial<Prisma.InstrumentCreateInput> = {}): Prisma.InstrumentCreateInput => ({
@@ -21,6 +21,7 @@ const fx = (symbol: string, sortOrder: number, extra: Partial<Prisma.InstrumentC
   volumeStep: 0.01,
   feedSource: "CTRADER",
   feedSymbol: symbol,
+  backupFeedSource: "TRADERMADE",
   sortOrder,
   ...extra,
 });
@@ -49,6 +50,7 @@ export const DEFAULT_INSTRUMENTS: Prisma.InstrumentCreateInput[] = [
     volumeStep: 0.01,
     feedSource: "CTRADER",
     feedSymbol: "XAUUSD",
+    backupFeedSource: "TRADERMADE",
     sortOrder: 200,
   },
   {
@@ -64,6 +66,7 @@ export const DEFAULT_INSTRUMENTS: Prisma.InstrumentCreateInput[] = [
     volumeStep: 0.01,
     feedSource: "CTRADER",
     feedSymbol: "XAGUSD",
+    backupFeedSource: "TRADERMADE",
     sortOrder: 210,
   },
   {
